@@ -2,10 +2,10 @@
 
 This guide walks you through creating, validating, and publishing a Muxy extension.
 
-The reference material for authors lives here in this docs set; the example and the
-manifest schema live alongside it in this repository:
+The reference material for authors lives here in this docs set; the manifest schema lives
+alongside it in this repository, and a working example lives in the extensions repository:
 
-- Example extension: [`examples/hello-world`](examples/hello-world)
+- Example extension: [`extensions/git`](https://github.com/muxy-app/extensions/tree/main/extensions/git)
 - Manifest schema: [`schema/manifest.schema.json`](schema/manifest.schema.json)
 
 Published community extensions are hosted in the separate
@@ -24,7 +24,8 @@ Copy the example as your starting point. An extension is an npm + [Vite](https:/
 project — the directory name must match the package `name`:
 
 ```bash
-cp -r examples/hello-world my-extension
+git clone https://github.com/muxy-app/extensions
+cp -r extensions/extensions/git my-extension
 ```
 
 ## 2. Edit `package.json`

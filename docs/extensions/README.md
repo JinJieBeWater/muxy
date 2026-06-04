@@ -87,7 +87,7 @@ flowchart TD
 
 ## Quick links
 
-- Example extension: [`examples/hello-world`](examples/hello-world)
+- Example extension: [`extensions/git`](https://github.com/muxy-app/extensions/tree/main/extensions/git)
 - Manifest schema: [`schema/manifest.schema.json`](schema/manifest.schema.json)
 - Community extensions: [muxy-extensions repo](https://github.com/muxy-app/extensions)
 
