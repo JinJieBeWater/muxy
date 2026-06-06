@@ -174,6 +174,9 @@ enum MuxyAPI {
             "topbar.set",
             "statusbar.set",
             "tabs.open",
+            "lifecycle.ackBeforeClose",
+            "lifecycle.resolveBeforeClose",
+            "lifecycle.closeSelf",
         ]).union(gitVerbs).union(filesVerbs)
 
         static let filesVerbs: Set<String> = [
@@ -359,7 +362,7 @@ enum MuxyAPI {
     @MainActor
     enum Popovers {
         static func close(extensionID: String) -> Result<Void, APIError> {
-            PopoverHost.shared.close(extensionID: extensionID)
+            PopoverHost.shared.requestClose(extensionID: extensionID)
             return .success(())
         }
 
@@ -527,7 +530,7 @@ enum MuxyAPI {
             guard let loc = locateTab(paneID: paneID, appState: appState) else {
                 return .failure(.paneNotFound(paneIDString))
             }
-            appState.dispatch(.closeTab(projectID: loc.key.projectID, areaID: loc.areaID, tabID: loc.tabID))
+            appState.closeTab(loc.tabID, areaID: loc.areaID, projectID: loc.key.projectID)
             return .success(())
         }
 
