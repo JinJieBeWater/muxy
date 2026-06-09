@@ -1,7 +1,5 @@
 # Get started
 
-> **Status:** under active development. Marked **DEV** in **Settings → Extensions**. The manifest format, permission set, and wire format may change without notice.
-
 The fastest way to understand Muxy extensions is to make one run. This page takes
 you from nothing to a live extension in about two minutes, then points you at the
 rest of the docs.

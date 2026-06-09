@@ -1,7 +1,5 @@
 # Extensions
 
-> **Status:** under active development. Marked **DEV** in **Settings → Extensions**. The manifest format, permission set, and wire format may change without notice.
-
 > **New here?** Start with [Get started](get-started.md) — build and run your first extension in about two minutes.
 
 User-installed directories that Muxy loads and runs. Each extension is an npm + [Vite](https://vitejs.dev) project: authors use any framework (React, Vue, Svelte, vanilla), `npm run build` bundles it into a `dist/` directory, and that build output is what gets published and installed. Extensions can react to workspace events, coordinate webviews with a background script, register palette commands, post notifications, and (with permission) drive the same verbs the `muxy` CLI exposes. Most need no background script; Muxy keeps a long-lived background process only for extensions that declare one to receive pushed events, handle extension-local messages, or run background shell commands.
