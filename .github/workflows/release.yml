@@ -15,6 +15,11 @@ on:
         description: "Version that beta builds should target after this release (X.Y.Z) — written to BETA_VERSION"
         required: true
         type: string
+      draft:
+        description: "Create the GitHub release as a draft"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   validate:
@@ -245,8 +250,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ needs.validate.outputs.version }}
+          DRAFT: ${{ inputs.draft }}
         run: |
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --draft="$DRAFT"
             gh release upload "$TAG" \
               --repo "${{ github.repository }}" \
               --clobber \
@@ -260,6 +269,7 @@ jobs:
               --repo "${{ github.repository }}" \
               --title "Muxy $TAG" \
               --generate-notes \
+              --draft="$DRAFT" \
               artifacts/dmg-arm64/*.dmg \
               artifacts/dmg-x86_64/*.dmg \
               appcast-arm64.xml \
@@ -286,6 +296,7 @@ jobs:
           git push origin main
 
       - name: Notify Discord
+        if: ${{ !inputs.draft }}
         continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -327,6 +338,7 @@ jobs:
 
   update-homebrew-tap:
     needs: [validate, release]
+    if: ${{ !inputs.draft }}
     runs-on: macos-26
     steps:
       - uses: actions/download-artifact@v4
