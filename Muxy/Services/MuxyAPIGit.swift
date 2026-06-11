@@ -8,9 +8,8 @@ extension MuxyAPI {
             let appState: AppState
             let projectStore: ProjectStore
             let worktreeStore: WorktreeStore
+            let projectGroupStore: ProjectGroupStore
         }
-
-        private static let service = GitRepositoryService()
 
         static let maxLogCount = 1000
         static let maxPRListLimit = 200
@@ -22,12 +21,12 @@ extension MuxyAPI {
             fresh: Bool,
             context: Context
         ) async -> Result<GitStatusSnapshot, APIError> {
-            await cachedRead(projectIdentifier, context, endpoint: "status", params: "local=\(local)", fresh: fresh) { repoPath in
+            await cachedRead(projectIdentifier, context, endpoint: "status", params: "local=\(local)", fresh: fresh) { repoPath, git in
                 try await GitStatusAggregator.snapshot(
                     repoPath: repoPath,
                     includePullRequest: !local,
                     forceFreshPullRequest: fresh,
-                    git: service
+                    git: git
                 )
             }
         }
@@ -55,8 +54,8 @@ extension MuxyAPI {
                 endpoint: "diff",
                 params: params,
                 fresh: request.fresh
-            ) { repoPath in
-                try await service.patchAndCompare(
+            ) { repoPath, git in
+                try await git.patchAndCompare(
                     repoPath: repoPath,
                     filePath: filePath,
                     lineLimit: limit.map { min($0, maxDiffLineLimit) },
@@ -78,8 +77,8 @@ extension MuxyAPI {
                 endpoint: "rawDiff",
                 params: params,
                 fresh: request.fresh
-            ) { repoPath in
-                try await service.rawDiff(
+            ) { repoPath, git in
+                try await git.rawDiff(
                     repoPath: repoPath,
                     filePath: request.filePath,
                     range: nil,
@@ -102,8 +101,8 @@ extension MuxyAPI {
                 endpoint: "log",
                 params: "max=\(maxCount);skip=\(skip)",
                 fresh: fresh
-            ) { repoPath in
-                try await service.commitLog(
+            ) { repoPath, git in
+                try await git.commitLog(
                     repoPath: repoPath,
                     maxCount: min(max(maxCount, 0), maxLogCount),
                     skip: max(skip, 0)
@@ -115,8 +114,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<[String], APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await service.listBranches(repoPath: repoPath)
+            await read(projectIdentifier, context) { repoPath, git in
+                try await git.listBranches(repoPath: repoPath)
             }
         }
 
@@ -124,8 +123,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<String, APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await service.currentBranch(repoPath: repoPath)
+            await read(projectIdentifier, context) { repoPath, git in
+                try await git.currentBranch(repoPath: repoPath)
             }
         }
 
@@ -134,9 +133,9 @@ extension MuxyAPI {
             fresh: Bool,
             context: Context
         ) async -> Result<GitRepositoryService.AheadBehind, APIError> {
-            await cachedRead(projectIdentifier, context, endpoint: "aheadBehind", fresh: fresh) { repoPath in
-                let branch = try await service.currentBranch(repoPath: repoPath)
-                return await service.aheadBehind(repoPath: repoPath, branch: branch)
+            await cachedRead(projectIdentifier, context, endpoint: "aheadBehind", fresh: fresh) { repoPath, git in
+                let branch = try await git.currentBranch(repoPath: repoPath)
+                return await git.aheadBehind(repoPath: repoPath, branch: branch)
             }
         }
 
@@ -144,8 +143,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<GitRepositoryService.RepoInfo, APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await service.repoInfo(repoPath: repoPath)
+            await read(projectIdentifier, context) { repoPath, git in
+                try await git.repoInfo(repoPath: repoPath)
             }
         }
 
@@ -154,10 +153,10 @@ extension MuxyAPI {
             fresh: Bool,
             context: Context
         ) async -> Result<GitRepositoryService.PRInfo?, APIError> {
-            await cachedRead(projectIdentifier, context, endpoint: "pr.info", fresh: fresh) { repoPath in
-                let branch = try await service.currentBranch(repoPath: repoPath)
-                let headSha = await service.headSha(repoPath: repoPath) ?? branch
-                let result = await service.cachedPullRequestInfo(
+            await cachedRead(projectIdentifier, context, endpoint: "pr.info", fresh: fresh) { repoPath, git in
+                let branch = try await git.currentBranch(repoPath: repoPath)
+                let headSha = await git.headSha(repoPath: repoPath) ?? branch
+                let result = await git.cachedPullRequestInfo(
                     repoPath: repoPath,
                     branch: branch,
                     headSha: headSha,
@@ -173,9 +172,9 @@ extension MuxyAPI {
             fresh: Bool,
             context: Context
         ) async -> Result<Int?, APIError> {
-            await cachedRead(projectIdentifier, context, endpoint: "pr.number", fresh: fresh) { repoPath in
-                let branch = try await service.currentBranch(repoPath: repoPath)
-                return await service.pullRequestNumber(repoPath: repoPath, branch: branch)
+            await cachedRead(projectIdentifier, context, endpoint: "pr.number", fresh: fresh) { repoPath, git in
+                let branch = try await git.currentBranch(repoPath: repoPath)
+                return await git.pullRequestNumber(repoPath: repoPath, branch: branch)
             }
         }
 
@@ -190,9 +189,9 @@ extension MuxyAPI {
             return await cachedRead(
                 projectIdentifier, context, endpoint: "pr.diff",
                 params: "n=\(number);limit=\(lineLimit.map(String.init) ?? "nil")", fresh: fresh
-            ) { repoPath in
-                let remote = await service.githubRemoteName(repoPath: repoPath) ?? "origin"
-                return try await service.pullRequestDiff(
+            ) { repoPath, git in
+                let remote = await git.githubRemoteName(repoPath: repoPath) ?? "origin"
+                return try await git.pullRequestDiff(
                     repoPath: repoPath,
                     number: number,
                     remote: remote,
@@ -207,8 +206,8 @@ extension MuxyAPI {
             limit: Int,
             context: Context
         ) async -> Result<[GitRepositoryService.PRListItem], APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await service.listPullRequests(
+            await read(projectIdentifier, context) { repoPath, git in
+                try await git.listPullRequests(
                     repoPath: repoPath,
                     filter: filter,
                     limit: min(max(limit, 1), maxPRListLimit)
@@ -220,8 +219,11 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<[GitWorktreeRecord], APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await GitWorktreeService.shared.listWorktrees(repoPath: repoPath)
+            await read(projectIdentifier, context) { repoPath, git in
+                try await GitWorktreeService.shared.listWorktrees(
+                    repoPath: repoPath,
+                    context: git.context
+                )
             }
         }
 
@@ -230,11 +232,11 @@ extension MuxyAPI {
             paths: [String],
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "stage", context: context) { repoPath in
+            await write(projectIdentifier, operation: "stage", context: context) { repoPath, git in
                 if paths.isEmpty {
-                    try await service.stageAll(repoPath: repoPath)
+                    try await git.stageAll(repoPath: repoPath)
                 } else {
-                    try await service.stageFiles(repoPath: repoPath, paths: paths)
+                    try await git.stageFiles(repoPath: repoPath, paths: paths)
                 }
             }
         }
@@ -244,11 +246,11 @@ extension MuxyAPI {
             paths: [String],
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "unstage", context: context) { repoPath in
+            await write(projectIdentifier, operation: "unstage", context: context) { repoPath, git in
                 if paths.isEmpty {
-                    try await service.unstageAll(repoPath: repoPath)
+                    try await git.unstageAll(repoPath: repoPath)
                 } else {
-                    try await service.unstageFiles(repoPath: repoPath, paths: paths)
+                    try await git.unstageFiles(repoPath: repoPath, paths: paths)
                 }
             }
         }
@@ -259,8 +261,8 @@ extension MuxyAPI {
             untrackedPaths: [String],
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "discard", context: context) { repoPath in
-                try await service.discardFiles(repoPath: repoPath, paths: paths, untrackedPaths: untrackedPaths)
+            await write(projectIdentifier, operation: "discard", context: context) { repoPath, git in
+                try await git.discardFiles(repoPath: repoPath, paths: paths, untrackedPaths: untrackedPaths)
             }
         }
 
@@ -272,11 +274,11 @@ extension MuxyAPI {
         ) async -> Result<String, APIError> {
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("commit message is required")) }
-            return await write(projectIdentifier, operation: "commit", context: context) { repoPath in
+            return await write(projectIdentifier, operation: "commit", context: context) { repoPath, git in
                 if stageAll {
-                    try await service.stageAll(repoPath: repoPath)
+                    try await git.stageAll(repoPath: repoPath)
                 }
-                return try await service.commit(repoPath: repoPath, message: trimmed)
+                return try await git.commit(repoPath: repoPath, message: trimmed)
             }
         }
 
@@ -285,17 +287,17 @@ extension MuxyAPI {
             setUpstream: Bool,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "push", context: context) { repoPath in
+            await write(projectIdentifier, operation: "push", context: context) { repoPath, git in
                 if setUpstream {
-                    let branch = try await service.currentBranch(repoPath: repoPath)
-                    try await service.pushSetUpstream(repoPath: repoPath, branch: branch)
+                    let branch = try await git.currentBranch(repoPath: repoPath)
+                    try await git.pushSetUpstream(repoPath: repoPath, branch: branch)
                     return
                 }
                 do {
-                    try await service.push(repoPath: repoPath)
+                    try await git.push(repoPath: repoPath)
                 } catch GitRepositoryService.GitError.noUpstreamBranch {
-                    let branch = try await service.currentBranch(repoPath: repoPath)
-                    try await service.pushSetUpstream(repoPath: repoPath, branch: branch)
+                    let branch = try await git.currentBranch(repoPath: repoPath)
+                    try await git.pushSetUpstream(repoPath: repoPath, branch: branch)
                 }
             }
         }
@@ -304,8 +306,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "init", context: context) { repoPath in
-                try await service.initRepository(repoPath: repoPath)
+            await write(projectIdentifier, operation: "init", context: context) { repoPath, git in
+                try await git.initRepository(repoPath: repoPath)
             }
         }
 
@@ -313,8 +315,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "pull", context: context) { repoPath in
-                try await service.pull(repoPath: repoPath)
+            await write(projectIdentifier, operation: "pull", context: context) { repoPath, git in
+                try await git.pull(repoPath: repoPath)
             }
         }
 
@@ -325,8 +327,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("branch name is required")) }
-            return await write(projectIdentifier, operation: "branch.create", context: context) { repoPath in
-                try await service.createAndSwitchBranch(repoPath: repoPath, name: trimmed)
+            return await write(projectIdentifier, operation: "branch.create", context: context) { repoPath, git in
+                try await git.createAndSwitchBranch(repoPath: repoPath, name: trimmed)
             }
         }
 
@@ -337,8 +339,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = branch.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("branch is required")) }
-            return await write(projectIdentifier, operation: "branch.switch", context: context) { repoPath in
-                try await service.switchBranch(repoPath: repoPath, branch: trimmed)
+            return await write(projectIdentifier, operation: "branch.switch", context: context) { repoPath, git in
+                try await git.switchBranch(repoPath: repoPath, branch: trimmed)
             }
         }
 
@@ -346,8 +348,8 @@ extension MuxyAPI {
             projectIdentifier: String?,
             context: Context
         ) async -> Result<[String], APIError> {
-            await read(projectIdentifier, context) { repoPath in
-                try await service.listRemoteBranches(repoPath: repoPath)
+            await read(projectIdentifier, context) { repoPath, git in
+                try await git.listRemoteBranches(repoPath: repoPath)
             }
         }
 
@@ -358,8 +360,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = branch.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("branch is required")) }
-            return await write(projectIdentifier, operation: "branch.deleteRemote", context: context) { repoPath in
-                try await service.deleteRemoteBranch(repoPath: repoPath, branch: trimmed)
+            return await write(projectIdentifier, operation: "branch.deleteRemote", context: context) { repoPath, git in
+                try await git.deleteRemoteBranch(repoPath: repoPath, branch: trimmed)
             }
         }
 
@@ -371,8 +373,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("name is required")) }
-            return await write(projectIdentifier, operation: "branch.delete", context: context) { repoPath in
-                try await service.deleteLocalBranch(repoPath: repoPath, branch: trimmed, force: force)
+            return await write(projectIdentifier, operation: "branch.delete", context: context) { repoPath, git in
+                try await git.deleteLocalBranch(repoPath: repoPath, branch: trimmed, force: force)
             }
         }
 
@@ -383,8 +385,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("hash is required")) }
-            return await write(projectIdentifier, operation: "checkout", context: context) { repoPath in
-                try await service.checkoutDetached(repoPath: repoPath, hash: trimmed)
+            return await write(projectIdentifier, operation: "checkout", context: context) { repoPath, git in
+                try await git.checkoutDetached(repoPath: repoPath, hash: trimmed)
             }
         }
 
@@ -395,8 +397,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("hash is required")) }
-            return await write(projectIdentifier, operation: "cherryPick", context: context) { repoPath in
-                try await service.cherryPick(repoPath: repoPath, hash: trimmed)
+            return await write(projectIdentifier, operation: "cherryPick", context: context) { repoPath, git in
+                try await git.cherryPick(repoPath: repoPath, hash: trimmed)
             }
         }
 
@@ -407,8 +409,8 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .failure(.invalidArguments("hash is required")) }
-            return await write(projectIdentifier, operation: "revert", context: context) { repoPath in
-                try await service.revert(repoPath: repoPath, hash: trimmed)
+            return await write(projectIdentifier, operation: "revert", context: context) { repoPath, git in
+                try await git.revert(repoPath: repoPath, hash: trimmed)
             }
         }
 
@@ -423,8 +425,8 @@ extension MuxyAPI {
             guard !trimmedName.isEmpty, !trimmedHash.isEmpty else {
                 return .failure(.invalidArguments("name and hash are required"))
             }
-            return await write(projectIdentifier, operation: "tag.create", context: context) { repoPath in
-                try await service.createTag(repoPath: repoPath, name: trimmedName, hash: trimmedHash)
+            return await write(projectIdentifier, operation: "tag.create", context: context) { repoPath, git in
+                try await git.createTag(repoPath: repoPath, name: trimmedName, hash: trimmedHash)
             }
         }
 
@@ -433,8 +435,8 @@ extension MuxyAPI {
             number: Int,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "pr.checkout", context: context) { repoPath in
-                try await service.checkoutPullRequest(repoPath: repoPath, number: number)
+            await write(projectIdentifier, operation: "pr.checkout", context: context) { repoPath, git in
+                try await git.checkoutPullRequest(repoPath: repoPath, number: number)
             }
         }
 
@@ -446,10 +448,13 @@ extension MuxyAPI {
         ) async -> Result<String, APIError> {
             let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedPath.isEmpty else { return .failure(.invalidArguments("path is required")) }
-            return await write(projectIdentifier, operation: "pr.checkoutWorktree", context: context) { repoPath in
-                try await service.createPullRequestWorktree(
+            let resolvedPath = workspaceContext(projectIdentifier, context: context).isRemote
+                ? trimmedPath
+                : NSString(string: trimmedPath).expandingTildeInPath
+            return await write(projectIdentifier, operation: "pr.checkoutWorktree", context: context) { repoPath, git in
+                try await git.createPullRequestWorktree(
                     repoPath: repoPath,
-                    path: NSString(string: trimmedPath).expandingTildeInPath,
+                    path: resolvedPath,
                     number: number
                 )
             }
@@ -469,19 +474,19 @@ extension MuxyAPI {
         ) async -> Result<GitRepositoryService.PRInfo, APIError> {
             let trimmedTitle = request.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedTitle.isEmpty else { return .failure(.invalidArguments("PR title is required")) }
-            return await write(request.projectIdentifier, operation: "pr.create", context: context) { repoPath in
-                let branch = try await service.currentBranch(repoPath: repoPath)
-                let hasRemote = await service.hasRemoteBranch(repoPath: repoPath, branch: branch)
+            return await write(request.projectIdentifier, operation: "pr.create", context: context) { repoPath, git in
+                let branch = try await git.currentBranch(repoPath: repoPath)
+                let hasRemote = await git.hasRemoteBranch(repoPath: repoPath, branch: branch)
                 if !hasRemote {
-                    try await service.pushSetUpstream(repoPath: repoPath, branch: branch)
+                    try await git.pushSetUpstream(repoPath: repoPath, branch: branch)
                 }
                 let base = request.baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let resolvedBase: String = if let base, !base.isEmpty {
                     base
                 } else {
-                    await service.defaultBranch(repoPath: repoPath) ?? "main"
+                    await git.defaultBranch(repoPath: repoPath) ?? "main"
                 }
-                return try await service.createPullRequest(
+                return try await git.createPullRequest(
                     repoPath: repoPath,
                     branch: branch,
                     baseBranch: resolvedBase,
@@ -499,8 +504,8 @@ extension MuxyAPI {
             deleteBranch: Bool,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "pr.merge", context: context) { repoPath in
-                try await service.mergePullRequest(
+            await write(projectIdentifier, operation: "pr.merge", context: context) { repoPath, git in
+                try await git.mergePullRequest(
                     repoPath: repoPath,
                     number: number,
                     method: method,
@@ -514,8 +519,8 @@ extension MuxyAPI {
             number: Int,
             context: Context
         ) async -> Result<Void, APIError> {
-            await write(projectIdentifier, operation: "pr.close", context: context) { repoPath in
-                try await service.closePullRequest(repoPath: repoPath, number: number)
+            await write(projectIdentifier, operation: "pr.close", context: context) { repoPath, git in
+                try await git.closePullRequest(repoPath: repoPath, number: number)
             }
         }
 
@@ -536,14 +541,17 @@ extension MuxyAPI {
             guard !trimmedPath.isEmpty, !trimmedBranch.isEmpty else {
                 return .failure(.invalidArguments("path and branch are required"))
             }
-            return await write(request.projectIdentifier, operation: "worktree.add", context: context) { repoPath in
+            let workspaceContext = workspaceContext(request.projectIdentifier, context: context)
+            let worktreePath = workspaceContext.isRemote ? trimmedPath : NSString(string: trimmedPath).expandingTildeInPath
+            return await write(request.projectIdentifier, operation: "worktree.add", context: context) { repoPath, _ in
                 let base = request.baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
                 try await GitWorktreeService.shared.addWorktree(
                     repoPath: repoPath,
-                    path: NSString(string: trimmedPath).expandingTildeInPath,
+                    path: worktreePath,
                     branch: trimmedBranch,
                     createBranch: request.createBranch,
-                    baseBranch: request.createBranch && base?.isEmpty == false ? base : nil
+                    baseBranch: request.createBranch && base?.isEmpty == false ? base : nil,
+                    context: workspaceContext
                 )
             }
         }
@@ -556,24 +564,38 @@ extension MuxyAPI {
         ) async -> Result<Void, APIError> {
             let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedPath.isEmpty else { return .failure(.invalidArguments("path is required")) }
-            let expandedPath = NSString(string: trimmedPath).expandingTildeInPath
+            let workspaceContext = workspaceContext(projectIdentifier, context: context)
+            let expandedPath = workspaceContext.isRemote ? trimmedPath : NSString(string: trimmedPath).expandingTildeInPath
 
-            guard let tracked = trackedWorktree(path: expandedPath, context: context) else {
-                return await write(projectIdentifier, operation: "worktree.remove", context: context) { repoPath in
+            guard let tracked = trackedWorktree(
+                path: expandedPath,
+                context: context,
+                workspaceContext: workspaceContext
+            )
+            else {
+                return await write(projectIdentifier, operation: "worktree.remove", context: context) { repoPath, _ in
                     try await GitWorktreeService.shared.removeWorktree(
                         repoPath: repoPath,
                         path: expandedPath,
-                        force: force
+                        force: force,
+                        context: workspaceContext
                     )
                 }
             }
 
-            if !force, await GitWorktreeService.shared.hasUncommittedChanges(worktreePath: tracked.worktree.path) {
+            if !force, await GitWorktreeService.shared.hasUncommittedChanges(
+                worktreePath: tracked.worktree.path,
+                context: workspaceContext
+            ) {
                 return .failure(.invalidArguments("worktree has uncommitted changes; pass force to remove it"))
             }
 
-            let result = await write(projectIdentifier, operation: "worktree.remove", context: context) { _ in
-                try await WorktreeStore.cleanupOnDisk(worktree: tracked.worktree, repoPath: tracked.project.path)
+            let result = await write(projectIdentifier, operation: "worktree.remove", context: context) { _, _ in
+                try await WorktreeStore.cleanupOnDisk(
+                    worktree: tracked.worktree,
+                    repoPath: tracked.project.path,
+                    context: workspaceContext
+                )
             }
             if case .success = result {
                 forgetWorktree(project: tracked.project, worktree: tracked.worktree, context: context)
@@ -583,12 +605,13 @@ extension MuxyAPI {
 
         static func trackedWorktree(
             path: String,
-            context: Context
+            context: Context,
+            workspaceContext: WorkspaceContext = .local
         ) -> (project: Project, worktree: Worktree)? {
-            let target = GitWorktreeService.canonicalPath(path)
+            let target = GitWorktreeService.canonicalPath(path, context: workspaceContext)
             for project in context.projectStore.projects {
                 guard let worktree = context.worktreeStore.list(for: project.id).first(where: {
-                    GitWorktreeService.canonicalPath($0.path) == target
+                    GitWorktreeService.canonicalPath($0.path, context: workspaceContext) == target
                 }), worktree.canBeRemoved
                 else { continue }
                 return (project, worktree)
@@ -615,13 +638,13 @@ extension MuxyAPI {
         private static func read<T: Sendable>(
             _ projectIdentifier: String?,
             _ context: Context,
-            _ work: (String) async throws -> T
+            _ work: (String, GitRepositoryService) async throws -> T
         ) async -> Result<T, APIError> {
-            guard let repoPath = repoPath(projectIdentifier, context: context) else {
+            guard let resolved = resolveRepo(projectIdentifier, context: context) else {
                 return .failure(.projectNotFound(projectIdentifier ?? ""))
             }
             do {
-                return try await .success(work(repoPath))
+                return try await .success(work(resolved.path, resolved.git))
             } catch {
                 return .failure(.underlying(error.localizedDescription))
             }
@@ -633,18 +656,18 @@ extension MuxyAPI {
             endpoint: String,
             params: String = "",
             fresh: Bool,
-            _ work: (String) async throws -> T
+            _ work: (String, GitRepositoryService) async throws -> T
         ) async -> Result<T, APIError> {
-            guard let repoPath = repoPath(projectIdentifier, context: context) else {
+            guard let resolved = resolveRepo(projectIdentifier, context: context) else {
                 return .failure(.projectNotFound(projectIdentifier ?? ""))
             }
-            let key = GitMetadataCache.ReadKey(repoPath: repoPath, endpoint: endpoint, params: params)
-            let signature = await service.repoSignature(repoPath: repoPath)
+            let key = GitMetadataCache.ReadKey(repoPath: resolved.path, endpoint: endpoint, params: params)
+            let signature = await resolved.git.repoSignature(repoPath: resolved.path)
             if !fresh, let cached: T = GitMetadataCache.shared.cachedRead(key, signature: signature) {
                 return .success(cached)
             }
             do {
-                let value = try await work(repoPath)
+                let value = try await work(resolved.path, resolved.git)
                 GitMetadataCache.shared.storeRead(value, key: key, signature: signature)
                 return .success(value)
             } catch {
@@ -656,53 +679,56 @@ extension MuxyAPI {
             _ projectIdentifier: String?,
             operation: String,
             context: Context,
-            _ work: (String) async throws -> T
+            _ work: (String, GitRepositoryService) async throws -> T
         ) async -> Result<T, APIError> {
-            guard let repoPath = repoPath(projectIdentifier, context: context) else {
+            guard let resolved = resolveRepo(projectIdentifier, context: context) else {
                 return .failure(.projectNotFound(projectIdentifier ?? ""))
             }
             let consent = ExtensionConsentRequestBuilder.make(
                 extensionID: context.extensionID,
                 verb: .gitWrite,
-                payload: .git(operation: operation, repoPath: repoPath),
+                payload: .git(operation: operation, repoPath: resolved.path),
                 source: "muxy-api"
             )
             guard await ExtensionConsentService.shared.gate(consent) == .allow else {
                 return .failure(.consentDenied(verb: "git.\(operation)"))
             }
             do {
-                let value = try await work(repoPath)
-                GitMetadataCache.shared.invalidateReads(repoPath: repoPath)
+                let value = try await work(resolved.path, resolved.git)
+                GitMetadataCache.shared.invalidateReads(repoPath: resolved.path)
                 return .success(value)
             } catch {
                 return .failure(.underlying(error.localizedDescription))
             }
         }
 
-        private static func repoPath(_ projectIdentifier: String?, context: Context) -> String? {
-            let project: Project? = if let projectIdentifier, !projectIdentifier.isEmpty {
-                matchProject(projectIdentifier, in: context.projectStore.projects)
-            } else if let activeProjectID = context.appState.activeProjectID {
-                context.projectStore.projects.first { $0.id == activeProjectID }
-            } else {
-                nil
-            }
-            guard let project else { return nil }
+        private static func workspaceContext(_ projectIdentifier: String?, context: Context) -> WorkspaceContext {
+            guard let project = context.projectGroupStore.resolveProject(
+                identifier: projectIdentifier,
+                localProjects: context.projectStore.projects,
+                activeProjectID: context.appState.activeProjectID
+            )
+            else { return .local }
+            return context.projectGroupStore.workspaceContext(for: project)
+        }
+
+        private static func resolveRepo(
+            _ projectIdentifier: String?,
+            context: Context
+        ) -> (path: String, git: GitRepositoryService)? {
+            guard let project = context.projectGroupStore.resolveProject(
+                identifier: projectIdentifier,
+                localProjects: context.projectStore.projects,
+                activeProjectID: context.appState.activeProjectID
+            )
+            else { return nil }
+            let git = GitRepositoryService(context: context.projectGroupStore.workspaceContext(for: project))
             if let worktreeID = context.appState.activeWorktreeID[project.id],
                let worktree = context.worktreeStore.worktree(projectID: project.id, worktreeID: worktreeID)
             {
-                return worktree.path
+                return (worktree.path, git)
             }
-            return project.path
-        }
-
-        private static func matchProject(_ identifier: String, in projects: [Project]) -> Project? {
-            let standardizedPath = URL(fileURLWithPath: identifier).standardizedFileURL.path
-            return projects.first { project in
-                project.id.uuidString == identifier
-                    || project.name.localizedCaseInsensitiveCompare(identifier) == .orderedSame
-                    || URL(fileURLWithPath: project.path).standardizedFileURL.path == standardizedPath
-            }
+            return (project.path, git)
         }
     }
 }

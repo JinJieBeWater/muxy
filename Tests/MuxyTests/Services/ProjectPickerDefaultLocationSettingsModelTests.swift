@@ -185,7 +185,7 @@ private final class ProjectPickerDefaultLocationPanelFake: ProjectPickerDefaultL
     }
 }
 
-private final class ProjectPickerDefaultLocationSettingsFileSystemFake: ProjectPickerFileSystem {
+private final class ProjectPickerDefaultLocationSettingsFileSystemFake: ProjectPickerFileSystem, @unchecked Sendable {
     var directoryStates: [String: ProjectPickerFileSystemDirectoryState] = [:]
     var readablePaths: Set<String> = []
 
@@ -197,7 +197,7 @@ private final class ProjectPickerDefaultLocationSettingsFileSystemFake: ProjectP
         readablePaths.contains(path)
     }
 
-    func contentsOfDirectory(atPath path: String) throws -> [ProjectPickerFileSystemDirectoryEntry] {
+    func contentsOfDirectory(atPath path: String) async throws -> [ProjectPickerFileSystemDirectoryEntry] {
         []
     }
 }

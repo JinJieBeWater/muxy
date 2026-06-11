@@ -10,6 +10,7 @@ enum WorktreeRefreshHelper {
         project: Project,
         appState: AppState,
         worktreeStore: WorktreeStore,
+        projectGroupStore: ProjectGroupStore,
         isRefreshing: Binding<Bool>? = nil,
         presentErrors: Bool = true
     ) async {
@@ -19,7 +20,8 @@ enum WorktreeRefreshHelper {
         defer { isRefreshing?.wrappedValue = false }
 
         do {
-            let refreshed = try await worktreeStore.refreshFromGit(project: project)
+            let context = projectGroupStore.workspaceContext(for: project)
+            let refreshed = try await worktreeStore.refreshFromGit(project: project, context: context)
             let refreshedIDs = Set(refreshed.map(\.id))
             let replacement = appState.activeWorktreeID[project.id].flatMap { activeID in
                 refreshed.first { $0.id == activeID }

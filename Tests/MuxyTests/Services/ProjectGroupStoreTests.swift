@@ -6,10 +6,20 @@ import Testing
 @Suite("ProjectGroupStore")
 @MainActor
 struct ProjectGroupStoreTests {
+    private let sink = InMemoryWorkspaceContextSink()
+
+    private func makeStore(
+        persistence: any ProjectGroupPersisting,
+        devices: [RemoteDevice] = []
+    ) -> ProjectGroupStore {
+        let deviceStore = RemoteDeviceStore(persistence: InMemoryRemoteDevicePersistence(initial: devices))
+        return ProjectGroupStore(persistence: persistence, remoteDeviceStore: deviceStore, workspaceContextSink: sink)
+    }
+
     @Test("addGroup appends a new group and persists it")
     func addGroup() {
         let persistence = ProjectGroupPersistenceStub()
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.addGroup(name: "Work")
 
@@ -22,7 +32,7 @@ struct ProjectGroupStoreTests {
     func removeGroup() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.removeGroup(id: group.id)
 
@@ -34,7 +44,7 @@ struct ProjectGroupStoreTests {
     func removeGroupClearsActiveGroup() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         store.selectGroup(id: group.id)
 
         store.removeGroup(id: group.id)
@@ -47,7 +57,7 @@ struct ProjectGroupStoreTests {
     func renameGroup() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.renameGroup(id: group.id, to: "Personal")
 
@@ -59,7 +69,7 @@ struct ProjectGroupStoreTests {
     func renameGroupUnknownID() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.renameGroup(id: UUID(), to: "Other")
 
@@ -70,7 +80,7 @@ struct ProjectGroupStoreTests {
     func addProject() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         let projectID = UUID()
 
         store.addProject(projectID: projectID, toGroup: group.id)
@@ -83,7 +93,7 @@ struct ProjectGroupStoreTests {
     func addProjectIgnoresHome() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.addProject(projectID: Project.homeID, toGroup: group.id)
 
@@ -95,7 +105,7 @@ struct ProjectGroupStoreTests {
         let projectID = UUID()
         let group = ProjectGroup(name: "Work", projectIDs: [projectID])
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.addProject(projectID: projectID, toGroup: group.id)
 
@@ -106,7 +116,7 @@ struct ProjectGroupStoreTests {
     func addProjectToActiveGroup() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         let projectID = UUID()
 
         store.selectGroup(id: group.id)
@@ -120,7 +130,7 @@ struct ProjectGroupStoreTests {
     func addProjectToActiveGroupNoSelection() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.addProjectToActiveGroup(projectID: UUID())
 
@@ -133,7 +143,7 @@ struct ProjectGroupStoreTests {
         let projectID = UUID()
         let group = ProjectGroup(name: "Work", projectIDs: [projectID])
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.removeProject(projectID: projectID, fromGroup: group.id)
 
@@ -144,7 +154,7 @@ struct ProjectGroupStoreTests {
     @Test("load on empty persistence yields empty groups")
     func loadEmptyIsEmpty() {
         let persistence = ProjectGroupPersistenceStub(initial: [])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         #expect(store.groups.isEmpty)
     }
@@ -154,7 +164,7 @@ struct ProjectGroupStoreTests {
         let second = ProjectGroup(name: "B", sortOrder: 1)
         let first = ProjectGroup(name: "A", sortOrder: 0)
         let persistence = ProjectGroupPersistenceStub(initial: [second, first])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         #expect(store.groups.first?.name == "A")
         #expect(store.groups.last?.name == "B")
@@ -163,7 +173,7 @@ struct ProjectGroupStoreTests {
     @Test("addGroup assigns sequential sortOrder")
     func addGroupSortOrder() {
         let persistence = ProjectGroupPersistenceStub(initial: [])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.addGroup(name: "First")
         store.addGroup(name: "Second")
@@ -175,7 +185,7 @@ struct ProjectGroupStoreTests {
     @Test("activeGroupID is nil by default")
     func activeGroupIDDefaultsToNil() {
         let persistence = ProjectGroupPersistenceStub(initial: [])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         #expect(store.activeGroupID == nil)
     }
@@ -184,7 +194,7 @@ struct ProjectGroupStoreTests {
     func selectGroup() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         store.selectGroup(id: group.id)
 
@@ -196,7 +206,7 @@ struct ProjectGroupStoreTests {
     func clearGroupSelection() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         store.selectGroup(id: group.id)
 
         store.clearGroupSelection()
@@ -209,7 +219,7 @@ struct ProjectGroupStoreTests {
     func loadRestoresActiveGroupID() {
         let group = ProjectGroup(name: "Work")
         let persistence = ProjectGroupPersistenceStub(initial: [group], storedActiveGroupID: group.id)
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         #expect(store.activeGroupID == group.id)
     }
@@ -217,7 +227,7 @@ struct ProjectGroupStoreTests {
     @Test("load discards persisted activeGroupID when group no longer exists")
     func loadDiscardsOrphanActiveGroupID() {
         let persistence = ProjectGroupPersistenceStub(initial: [], storedActiveGroupID: UUID())
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
 
         #expect(store.activeGroupID == nil)
         #expect(persistence.storedActiveGroupID == nil)
@@ -226,7 +236,7 @@ struct ProjectGroupStoreTests {
     @Test("filteredProjects returns all projects when activeGroupID is nil")
     func filteredProjectsAllWhenNoSelection() {
         let persistence = ProjectGroupPersistenceStub(initial: [])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         let projects = [
             Project(name: "A", path: "/a"),
             Project(name: "B", path: "/b")
@@ -243,7 +253,7 @@ struct ProjectGroupStoreTests {
         let projectB = Project(name: "B", path: "/b")
         let group = ProjectGroup(name: "Work", projectIDs: [projectA.id])
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         store.selectGroup(id: group.id)
 
         let result = store.filteredProjects(from: [projectA, projectB])
@@ -255,7 +265,7 @@ struct ProjectGroupStoreTests {
     @Test("filteredProjects returns all projects when activeGroupID does not match any group")
     func filteredProjectsUnknownActiveGroup() {
         let persistence = ProjectGroupPersistenceStub(initial: [])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         store.selectGroup(id: UUID())
         let projects = [Project(name: "A", path: "/a")]
 
@@ -268,13 +278,214 @@ struct ProjectGroupStoreTests {
     func filteredProjectsEmptyGroup() {
         let group = ProjectGroup(name: "Empty")
         let persistence = ProjectGroupPersistenceStub(initial: [group])
-        let store = ProjectGroupStore(persistence: persistence)
+        let store = makeStore(persistence: persistence)
         store.selectGroup(id: group.id)
         let projects = [Project(name: "A", path: "/a")]
 
         let result = store.filteredProjects(from: projects)
 
         #expect(result.isEmpty)
+    }
+
+    @Test("workspaceContext is local for a project without a remote workspace")
+    func workspaceContextLocalProject() {
+        let store = makeStore(persistence: ProjectGroupPersistenceStub(initial: []))
+
+        #expect(store.workspaceContext(for: Project(name: "A", path: "/a")) == .local)
+    }
+
+    @Test("workspaceContext resolves a remote project to its device's SSH context")
+    func workspaceContextRemoteProject() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~/code", user: "deploy"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let store = makeStore(persistence: ProjectGroupPersistenceStub(initial: [group]), devices: [device])
+        let project = Project(name: "api", path: "~/code/api", remoteWorkspaceID: group.id)
+
+        #expect(store.workspaceContext(for: project) == .ssh(device.destination))
+    }
+
+    @Test("workspaceContext falls back to local when the device is missing")
+    func workspaceContextMissingDevice() {
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: UUID())
+        let store = makeStore(persistence: ProjectGroupPersistenceStub(initial: [group]))
+        let project = Project(name: "api", path: "~/code/api", remoteWorkspaceID: group.id)
+
+        #expect(store.workspaceContext(for: project) == .local)
+    }
+
+    @Test("workspaceContext falls back to local when the remote workspace is missing")
+    func workspaceContextOrphanRemoteProject() {
+        let store = makeStore(persistence: ProjectGroupPersistenceStub(initial: []))
+        let project = Project(name: "api", path: "~/code/api", remoteWorkspaceID: UUID())
+
+        #expect(store.workspaceContext(for: project) == .local)
+    }
+
+    @Test("addRemoteWorkspace appends an SSH group referencing the device and persists")
+    func addRemoteWorkspace() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~/code", user: "deploy"))
+        let persistence = ProjectGroupPersistenceStub()
+        let store = makeStore(persistence: persistence, devices: [device])
+
+        let group = store.addRemoteWorkspace(name: "Remote", deviceID: device.id)
+
+        #expect(store.groups.count == 1)
+        #expect(store.groups.first?.type == .ssh)
+        #expect(store.groups.first?.remoteDeviceID == device.id)
+        #expect(persistence.savedGroups?.first?.id == group.id)
+    }
+
+    @Test("updateRemoteWorkspace repoints the group to another device and persists")
+    func updateRemoteWorkspace() {
+        let oldDevice = RemoteDevice(name: "Old", ssh: SSHWorkspaceData(host: "old.example.com"))
+        let newDevice = RemoteDevice(name: "New", ssh: SSHWorkspaceData(host: "new.example.com", remoteRoot: "~/work"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: oldDevice.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [oldDevice, newDevice])
+
+        store.updateRemoteWorkspace(id: group.id, deviceID: newDevice.id)
+
+        #expect(store.groups.first?.remoteDeviceID == newDevice.id)
+        #expect(persistence.savedGroups?.first?.remoteDeviceID == newDevice.id)
+    }
+
+    @Test("removeWorkspaces deletes every workspace using the device")
+    func removeWorkspacesUsingDevice() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com"))
+        let groupA = ProjectGroup(name: "A", type: .ssh, remoteDeviceID: device.id)
+        let groupB = ProjectGroup(name: "B", type: .ssh, remoteDeviceID: device.id)
+        let other = ProjectGroup(name: "Local")
+        let persistence = ProjectGroupPersistenceStub(initial: [groupA, groupB, other])
+        let store = makeStore(persistence: persistence, devices: [device])
+
+        #expect(store.workspaceNames(usingDevice: device.id).sorted() == ["A", "B"])
+        store.removeWorkspaces(usingDevice: device.id)
+
+        #expect(store.groups.map(\.name) == ["Local"])
+    }
+
+    @Test("addRemoteProject appends a project and persists")
+    func addRemoteProject() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+
+        let project = store.addRemoteProject(name: "api", path: "~/code/api", toGroup: group.id)
+
+        #expect(project != nil)
+        #expect(store.groups.first?.remoteProjects.map(\.path) == ["~/code/api"])
+        #expect(persistence.savedGroups?.first?.remoteProjects.count == 1)
+    }
+
+    @Test("addRemoteProject returns the existing project for a duplicate path")
+    func addRemoteProjectDeduplicatesByPath() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+        let first = store.addRemoteProject(name: "api", path: "~/code/api", toGroup: group.id)
+
+        let second = store.addRemoteProject(name: "api-again", path: "~/code/./api", toGroup: group.id)
+
+        #expect(second?.id == first?.id)
+        #expect(store.groups.first?.remoteProjects.count == 1)
+    }
+
+    @Test("addRemoteProject rejects a path equal to the device root")
+    func addRemoteProjectRejectsDeviceRoot() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~/code"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+
+        let project = store.addRemoteProject(name: "root", path: "~/code", toGroup: group.id)
+
+        #expect(project == nil)
+        #expect(store.groups.first?.remoteProjects.isEmpty == true)
+    }
+
+    @Test("removeRemoteProject deletes the project and persists")
+    func removeRemoteProject() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+        let project = store.addRemoteProject(name: "api", path: "~/code/api", toGroup: group.id)
+
+        store.removeRemoteProject(id: project!.id, fromGroup: group.id)
+
+        #expect(store.groups.first?.remoteProjects.isEmpty == true)
+        #expect(persistence.savedGroups?.first?.remoteProjects.isEmpty == true)
+    }
+
+    @Test("renameRemoteProject updates the name and persists")
+    func renameRemoteProject() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+        let project = store.addRemoteProject(name: "api", path: "~/code/api", toGroup: group.id)
+
+        store.renameRemoteProject(id: project!.id, to: "service")
+
+        #expect(store.groups.first?.remoteProjects.first?.name == "service")
+        #expect(persistence.savedGroups?.first?.remoteProjects.first?.name == "service")
+    }
+
+    @Test("setRemoteProjectWorktreesEnabled toggles the flag and persists")
+    func setRemoteProjectWorktreesEnabled() {
+        let device = RemoteDevice(name: "Prod", ssh: SSHWorkspaceData(host: "example.com", remoteRoot: "~"))
+        let group = ProjectGroup(name: "Remote", type: .ssh, remoteDeviceID: device.id)
+        let persistence = ProjectGroupPersistenceStub(initial: [group])
+        let store = makeStore(persistence: persistence, devices: [device])
+        let project = store.addRemoteProject(name: "api", path: "~/code/api", toGroup: group.id)
+
+        store.setRemoteProjectWorktreesEnabled(id: project!.id, to: true)
+
+        #expect(store.groups.first?.remoteProjects.first?.worktreesEnabled == true)
+        #expect(persistence.savedGroups?.first?.remoteProjects.first?.worktreesEnabled == true)
+    }
+
+    @Test("loading a legacy ssh group migrates its inline data into a device")
+    func legacyMigrationCreatesDevice() throws {
+        let json = """
+        [{
+          "id": "00000000-0000-0000-0000-000000000003",
+          "name": "prod",
+          "sortOrder": 0,
+          "type": "ssh",
+          "sshData": { "host": "prod.example.com", "remoteRoot": "~/code", "user": "deploy" }
+        }]
+        """
+        let legacyGroup = try JSONDecoder().decode([ProjectGroup].self, from: Data(json.utf8))[0]
+        let persistence = ProjectGroupPersistenceStub(initial: [legacyGroup])
+        let deviceStore = RemoteDeviceStore(persistence: InMemoryRemoteDevicePersistence())
+        let store = ProjectGroupStore(persistence: persistence, remoteDeviceStore: deviceStore, workspaceContextSink: sink)
+
+        #expect(deviceStore.devices.count == 1)
+        let device = try #require(deviceStore.devices.first)
+        #expect(device.ssh.host == "prod.example.com")
+        #expect(device.ssh.user == "deploy")
+        #expect(store.groups.first?.remoteDeviceID == device.id)
+        #expect(store.groups.first?.legacySSHData == nil)
+        #expect(persistence.savedGroups?.first?.remoteDeviceID == device.id)
+
+        let project = Project(name: "api", path: "~/code/api", remoteWorkspaceID: legacyGroup.id)
+        #expect(store.workspaceContext(for: project) == .ssh(device.destination))
+    }
+
+    @Test("RemoteProject.asProject preserves the worktrees flag and workspace id")
+    func remoteProjectAsProjectRoundTrip() {
+        let workspaceID = UUID()
+        let remote = RemoteProject(name: "api", path: "~/code/api", worktreesEnabled: true)
+
+        let project = remote.asProject(workspaceID: workspaceID, sortOrder: 3)
+
+        #expect(project.id == remote.id)
+        #expect(project.worktreesEnabled == true)
+        #expect(project.remoteWorkspaceID == workspaceID)
+        #expect(project.sortOrder == 3)
     }
 }
 

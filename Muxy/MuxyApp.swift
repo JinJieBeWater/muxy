@@ -13,6 +13,7 @@ struct MuxyApp: App {
     @State private var projectStore: ProjectStore
     @State private var worktreeStore: WorktreeStore
     @State private var projectGroupStore: ProjectGroupStore
+    @State private var remoteDeviceStore: RemoteDeviceStore
     @State private var worktreeAutoRefresher: VCSWorktreeAutoRefresher?
     @State private var didStartDeferredServices = false
 
@@ -31,17 +32,23 @@ struct MuxyApp: App {
             terminalViews: environment.terminalViews,
             workspacePersistence: environment.workspacePersistence
         )
-        appState.restoreSelection(
-            projects: projectStore.projects,
-            worktrees: worktreeStore.worktrees
+        let remoteDeviceStore = RemoteDeviceStore(
+            persistence: environment.remoteDevicePersistence
         )
         let projectGroupStore = ProjectGroupStore(
-            persistence: environment.projectGroupPersistence
+            persistence: environment.projectGroupPersistence,
+            remoteDeviceStore: remoteDeviceStore
+        )
+        appState.restoreSelection(
+            projects: projectStore.projects,
+            worktrees: worktreeStore.worktrees,
+            skippingProjectIDs: projectGroupStore.activeRemoteProjectIDs
         )
         _appState = State(initialValue: appState)
         _projectStore = State(initialValue: projectStore)
         _worktreeStore = State(initialValue: worktreeStore)
         _projectGroupStore = State(initialValue: projectGroupStore)
+        _remoteDeviceStore = State(initialValue: remoteDeviceStore)
     }
 
     var body: some Scene {
@@ -51,6 +58,8 @@ struct MuxyApp: App {
                 .environment(projectStore)
                 .environment(worktreeStore)
                 .environment(projectGroupStore)
+                .environment(remoteDeviceStore)
+                .environment(SSHConnectionService.shared)
                 .environment(GhosttyService.shared)
                 .environment(MuxyConfig.shared)
                 .environment(ThemeService.shared)
@@ -69,6 +78,14 @@ struct MuxyApp: App {
                     appDelegate.onTerminate = { [appState] in
                         appState.saveWorkspaces()
                     }
+                    appDelegate.settingsContent = { [projectGroupStore, remoteDeviceStore] in
+                        AnyView(
+                            SettingsView()
+                                .environment(projectGroupStore)
+                                .environment(remoteDeviceStore)
+                                .environment(SSHConnectionService.shared)
+                        )
+                    }
                     appDelegate.openProjectFromPath = { [appState, projectStore, worktreeStore, projectGroupStore] path in
                         CLIAccessor.openProjectFromPath(
                             path,
@@ -79,12 +96,18 @@ struct MuxyApp: App {
                         )
                     }
                     appDelegate.flushPendingOpens()
-                    NotificationSocketServer.shared.commandHandler = { [appState, projectStore, worktreeStore] message, context in
+                    NotificationSocketServer.shared.commandHandler = { [
+                        appState,
+                        projectStore,
+                        worktreeStore,
+                        projectGroupStore
+                    ] message, context in
                         await SocketCommandHandler.handleRequest(
                             message,
                             appState: appState,
                             projectStore: projectStore,
                             worktreeStore: worktreeStore,
+                            projectGroupStore: projectGroupStore,
                             clientContext: context
                         )
                     }
@@ -92,7 +115,8 @@ struct MuxyApp: App {
                         let delegate = RemoteServerDelegate(
                             appState: appState,
                             projectStore: projectStore,
-                            worktreeStore: worktreeStore
+                            worktreeStore: worktreeStore,
+                            projectGroupStore: projectGroupStore
                         )
                         delegate.server = server
                         return delegate
@@ -164,7 +188,8 @@ struct MuxyApp: App {
         worktreeAutoRefresher = VCSWorktreeAutoRefresher(
             appState: appState,
             projectStore: projectStore,
-            worktreeStore: worktreeStore
+            worktreeStore: worktreeStore,
+            projectGroupStore: projectGroupStore
         )
     }
 }
@@ -173,6 +198,7 @@ struct MuxyApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var onTerminate: (() -> Void)?
     var openProjectFromPath: ((String) -> Void)?
+    var settingsContent: (() -> AnyView)?
 
     private var pendingOpenPaths: [String] = []
     private var pendingInstallName: String?
@@ -498,7 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onClosed: { [weak self] in self?.settingsWindow = nil }
         )
         settingsWindow = AppModalPresenter.present(config) {
-            SettingsView()
+            settingsContent?() ?? AnyView(SettingsView())
         }
     }
 

@@ -710,10 +710,12 @@ enum MuxyAPI {
                 return .failure(.projectNotFound(request.projectIdentifier ?? ""))
             }
 
+            let workspaceContext = ActiveWorkspaceContext.shared.current
+            let expandedPath = workspaceContext.isRemote ? trimmedPath : NSString(string: trimmedPath).expandingTildeInPath
             let path = trimmedPath.isEmpty
                 ? WorktreeLocationResolver.worktreeDirectory(for: project, slug: slug(from: trimmedName))
-                : NSString(string: trimmedPath).expandingTildeInPath
-            guard !FileManager.default.fileExists(atPath: path) else {
+                : expandedPath
+            guard await !workspaceContext.fileOps.exists(at: path) else {
                 return .failure(.worktreePathExists)
             }
 
@@ -726,7 +728,8 @@ enum MuxyAPI {
                         branch: trimmedBranch,
                         createBranch: request.createBranch,
                         baseBranch: request.createBranch && !trimmedBase.isEmpty ? trimmedBase : nil
-                    )
+                    ),
+                    context: workspaceContext
                 )
                 appState.selectWorktree(projectID: project.id, worktree: worktree)
                 return .success(CreatedWorktreeInfo(
@@ -744,13 +747,16 @@ enum MuxyAPI {
             projectIdentifier: String?,
             appState: AppState,
             projectStore: ProjectStore,
-            worktreeStore: WorktreeStore
+            worktreeStore: WorktreeStore,
+            projectGroupStore: ProjectGroupStore? = nil
         ) async -> Result<RefreshWorktreesResult, APIError> {
             guard let project = resolveProject(projectIdentifier, appState: appState, projectStore: projectStore) else {
                 return .failure(.projectNotFound(projectIdentifier ?? ""))
             }
             do {
-                let worktrees = try await worktreeStore.refreshFromGit(project: project)
+                let context = projectGroupStore?.workspaceContext(for: project)
+                    ?? (project.isRemote ? ActiveWorkspaceContext.shared.current : .local)
+                let worktrees = try await worktreeStore.refreshFromGit(project: project, context: context)
                 return .success(RefreshWorktreesResult(count: worktrees.count))
             } catch {
                 return .failure(.underlying(error.localizedDescription))
@@ -936,11 +942,12 @@ enum MuxyAPI {
             callingExtensionID: String?,
             consent: ExtensionConsentService
         ) async -> Result<Void, APIError> {
+            let workspaceContext = ActiveWorkspaceContext.shared.current
             var resolvedDirectory: String?
             if let directory = request.directory {
                 guard let root = appState.workspaceRoots[target.key]?.findArea(id: target.areaID)?.projectPath,
-                      let resolved = Files.resolve(root: root, relativePath: directory),
-                      directoryExists(at: resolved)
+                      let resolved = resolveTabDirectory(root: root, relativePath: directory, context: workspaceContext),
+                      await directoryExists(at: resolved, context: workspaceContext)
                 else {
                     return .failure(.invalidArguments("directory must be an existing folder inside the worktree"))
                 }
@@ -986,10 +993,35 @@ enum MuxyAPI {
             return .success(())
         }
 
-        private static func directoryExists(at path: String) -> Bool {
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-            return exists && isDirectory.boolValue
+        static func resolveTabDirectory(
+            root: String,
+            relativePath: String,
+            context: WorkspaceContext
+        ) -> String? {
+            guard context.isRemote else {
+                return Files.resolve(root: root, relativePath: relativePath)
+            }
+            let normalizedRoot = ProjectPickerPathService.standardizedRemotePath(root)
+            let trimmed = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
+            let joined = trimmed.isEmpty ? normalizedRoot : normalizedRoot + "/" + trimmed
+            let resolved = ProjectPickerPathService.standardizedRemotePath(joined)
+            guard resolved == normalizedRoot || resolved.hasPrefix(normalizedRoot + "/") else { return nil }
+            return resolved
+        }
+
+        private static func directoryExists(at path: String, context: WorkspaceContext) async -> Bool {
+            guard context.isRemote else {
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                return exists && isDirectory.boolValue
+            }
+            guard case let .ssh(destination) = context else { return false }
+            let quoted = RemoteCommandBuilder.quoteRemotePath(path)
+            let result = try? await SSHCommandRunner.run(
+                destination: destination,
+                remoteCommand: "[ -d \(quoted) ] && echo yes || true"
+            )
+            return result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
         }
 
         private static func activateOpenTarget(_ target: OpenTabTarget, appState: AppState) {

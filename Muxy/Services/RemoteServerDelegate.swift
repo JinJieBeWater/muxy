@@ -12,17 +12,32 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     private let appState: AppState
     private let projectStore: ProjectStore
     private let worktreeStore: WorktreeStore
-    private let gitService = GitRepositoryService()
+    private let projectGroupStore: ProjectGroupStore
+    private func gitService(projectID: UUID) -> GitRepositoryService {
+        guard let project = project(for: projectID) else { return GitRepositoryService() }
+        return GitRepositoryService(context: projectGroupStore.workspaceContext(for: project))
+    }
+
+    private func project(for projectID: UUID) -> Project? {
+        projectStore.projects.first(where: { $0.id == projectID }) ?? resolveRemoteProject(projectID)?.project
+    }
+
     private var workspaceBroadcastTask: Task<Void, Never>?
     private var projectsBroadcastTask: Task<Void, Never>?
     weak var server: MuxyRemoteServer? {
         didSet { RemoteTerminalStreamer.shared.server = server }
     }
 
-    init(appState: AppState, projectStore: ProjectStore, worktreeStore: WorktreeStore) {
+    init(
+        appState: AppState,
+        projectStore: ProjectStore,
+        worktreeStore: WorktreeStore,
+        projectGroupStore: ProjectGroupStore
+    ) {
         self.appState = appState
         self.projectStore = projectStore
         self.worktreeStore = worktreeStore
+        self.projectGroupStore = projectGroupStore
         PaneOwnershipStore.shared.onOwnershipChanged = { [weak self] paneID, owner in
             TerminalViewRegistry.shared.existingView(for: paneID)?.remoteOwnershipDidChange()
             self?.applyOwnerTheme(paneID: paneID, owner: owner)
@@ -107,7 +122,32 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     }
 
     private func projectSnapshots() -> [ProjectDTO] {
-        projectStore.projects.map { $0.toDTO() }
+        let localProjects = projectStore.projects.map { $0.toDTO(workspaceKind: .local) }
+        let remoteProjects = projectGroupStore.groups
+            .filter { $0.type == .ssh }
+            .flatMap { group -> [ProjectDTO] in
+                let home = projectGroupStore.remoteHomeProject(for: group).map {
+                    $0.toDTO(workspaceID: group.id, workspaceName: group.name, workspaceKind: .ssh)
+                }
+                let projects = group.remoteProjects.enumerated().map { index, remote in
+                    remote.asProject(workspaceID: group.id, sortOrder: index)
+                        .toDTO(workspaceID: group.id, workspaceName: group.name, workspaceKind: .ssh)
+                }
+                return (home.map { [$0] } ?? []) + projects
+            }
+        return localProjects + remoteProjects
+    }
+
+    private func resolveRemoteProject(_ projectID: UUID) -> (project: Project, group: ProjectGroup)? {
+        for group in projectGroupStore.groups where group.type == .ssh {
+            if let home = projectGroupStore.remoteHomeProject(for: group), home.id == projectID {
+                return (home, group)
+            }
+            guard let index = group.remoteProjects.firstIndex(where: { $0.id == projectID }) else { continue }
+            let project = group.remoteProjects[index].asProject(workspaceID: group.id, sortOrder: index)
+            return (project, group)
+        }
+        return nil
     }
 
     private func broadcastWorkspaces() {
@@ -125,9 +165,20 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     }
 
     func selectProject(_ projectID: UUID) {
-        guard let project = projectStore.projects.first(where: { $0.id == projectID }) else { return }
-        if appState.activeProjectID == projectID { return }
-        let worktreeList = worktreeStore.list(for: projectID)
+        if let project = projectStore.projects.first(where: { $0.id == projectID }) {
+            if projectGroupStore.isRemoteWorkspaceActive { projectGroupStore.clearGroupSelection() }
+            selectLoadedProject(project)
+            return
+        }
+        guard let resolved = resolveRemoteProject(projectID) else { return }
+        projectGroupStore.selectGroup(id: resolved.group.id)
+        worktreeStore.ensurePrimary(for: resolved.project)
+        selectLoadedProject(resolved.project)
+    }
+
+    private func selectLoadedProject(_ project: Project) {
+        if appState.activeProjectID == project.id { return }
+        let worktreeList = worktreeStore.list(for: project.id)
         guard let worktree = worktreeList.first(where: \.isPrimary) ?? worktreeList.first else { return }
         appState.selectProject(project, worktree: worktree)
     }
@@ -376,19 +427,19 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
 
     func getVCSStatus(projectID: UUID) async -> VCSStatusDTO? {
         guard let repoPath = try? repoPath(projectID: projectID) else { return nil }
-        return await vcsStatusDTO(repoPath: repoPath, forceFresh: false)
+        return await vcsStatusDTO(projectID: projectID, repoPath: repoPath, forceFresh: false)
     }
 
     func vcsRefresh(projectID: UUID) async -> VCSStatusDTO? {
         guard let repoPath = try? repoPath(projectID: projectID) else { return nil }
-        return await vcsStatusDTO(repoPath: repoPath, forceFresh: true)
+        return await vcsStatusDTO(projectID: projectID, repoPath: repoPath, forceFresh: true)
     }
 
-    private func vcsStatusDTO(repoPath: String, forceFresh: Bool) async -> VCSStatusDTO? {
+    private func vcsStatusDTO(projectID: UUID, repoPath: String, forceFresh: Bool) async -> VCSStatusDTO? {
         guard let snapshot = try? await GitStatusAggregator.snapshot(
             repoPath: repoPath,
             forceFreshPullRequest: forceFresh,
-            git: gitService
+            git: gitService(projectID: projectID)
         )
         else { return nil }
         return Self.toStatusDTO(snapshot)
@@ -396,45 +447,47 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
 
     func vcsCommit(projectID: UUID, message: String, stageAll: Bool) async throws {
         let repoPath = try repoPath(projectID: projectID)
+        let git = gitService(projectID: projectID)
         if stageAll {
-            try await gitService.stageAll(repoPath: repoPath)
+            try await git.stageAll(repoPath: repoPath)
         }
-        _ = try await gitService.commit(repoPath: repoPath, message: message)
+        _ = try await git.commit(repoPath: repoPath, message: message)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsPush(projectID: UUID) async throws {
         let repoPath = try repoPath(projectID: projectID)
+        let git = gitService(projectID: projectID)
         do {
-            try await gitService.push(repoPath: repoPath)
+            try await git.push(repoPath: repoPath)
         } catch GitRepositoryService.GitError.noUpstreamBranch {
-            let branch = try await gitService.currentBranch(repoPath: repoPath)
-            try await gitService.pushSetUpstream(repoPath: repoPath, branch: branch)
+            let branch = try await git.currentBranch(repoPath: repoPath)
+            try await git.pushSetUpstream(repoPath: repoPath, branch: branch)
         }
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsPull(projectID: UUID) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.pull(repoPath: repoPath)
+        try await gitService(projectID: projectID).pull(repoPath: repoPath)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsStageFiles(projectID: UUID, paths: [String]) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.stageFiles(repoPath: repoPath, paths: paths)
+        try await gitService(projectID: projectID).stageFiles(repoPath: repoPath, paths: paths)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsUnstageFiles(projectID: UUID, paths: [String]) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.unstageFiles(repoPath: repoPath, paths: paths)
+        try await gitService(projectID: projectID).unstageFiles(repoPath: repoPath, paths: paths)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsDiscardFiles(projectID: UUID, paths: [String], untrackedPaths: [String]) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.discardFiles(
+        try await gitService(projectID: projectID).discardFiles(
             repoPath: repoPath,
             paths: paths,
             untrackedPaths: untrackedPaths
@@ -444,7 +497,8 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
 
     func vcsGetDiff(projectID: UUID, filePath: String, forceFull: Bool) async throws -> VCSDiffDTO {
         let repoPath = try repoPath(projectID: projectID)
-        let files = try await gitService.changedFiles(repoPath: repoPath)
+        let git = gitService(projectID: projectID)
+        let files = try await git.changedFiles(repoPath: repoPath)
         let file = files.first { $0.path == filePath }
         if file?.isBinary == true {
             return VCSDiffDTO(
@@ -466,7 +520,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
             .unknown
         }
         let lineLimit = forceFull ? nil : Self.diffPreviewLineLimit
-        let result = try await gitService.patchAndCompare(
+        let result = try await git.patchAndCompare(
             repoPath: repoPath,
             filePath: filePath,
             lineLimit: lineLimit,
@@ -503,11 +557,12 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
 
     func vcsListBranches(projectID: UUID) async throws -> VCSBranchesDTO {
         let repoPath = try repoPath(projectID: projectID)
-        guard let current = try? await gitService.currentBranch(repoPath: repoPath) else {
+        let git = gitService(projectID: projectID)
+        guard let current = try? await git.currentBranch(repoPath: repoPath) else {
             throw RemoteVCSError.notGitRepo
         }
-        async let branches = try? gitService.listBranches(repoPath: repoPath)
-        async let defaultBranch = gitService.defaultBranch(repoPath: repoPath)
+        async let branches = try? git.listBranches(repoPath: repoPath)
+        async let defaultBranch = git.defaultBranch(repoPath: repoPath)
         return await VCSBranchesDTO(
             current: current,
             locals: branches ?? [],
@@ -517,13 +572,13 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
 
     func vcsSwitchBranch(projectID: UUID, branch: String) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.switchBranch(repoPath: repoPath, branch: branch)
+        try await gitService(projectID: projectID).switchBranch(repoPath: repoPath, branch: branch)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
     func vcsCreateBranch(projectID: UUID, name: String) async throws {
         let repoPath = try repoPath(projectID: projectID)
-        try await gitService.createAndSwitchBranch(repoPath: repoPath, name: name)
+        try await gitService(projectID: projectID).createAndSwitchBranch(repoPath: repoPath, name: name)
         notifyRepoDidChange(repoPath: repoPath)
     }
 
@@ -535,21 +590,22 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         draft: Bool
     ) async throws -> VCSCreatePRResultDTO {
         let repoPath = try repoPath(projectID: projectID)
-        let branch = try await gitService.currentBranch(repoPath: repoPath)
+        let git = gitService(projectID: projectID)
+        let branch = try await git.currentBranch(repoPath: repoPath)
 
-        let hasRemote = await gitService.hasRemoteBranch(repoPath: repoPath, branch: branch)
+        let hasRemote = await git.hasRemoteBranch(repoPath: repoPath, branch: branch)
         if !hasRemote {
-            try await gitService.pushSetUpstream(repoPath: repoPath, branch: branch)
+            try await git.pushSetUpstream(repoPath: repoPath, branch: branch)
         }
 
         let trimmedBase = baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedBase: String = if let trimmedBase, !trimmedBase.isEmpty {
             trimmedBase
         } else {
-            await gitService.defaultBranch(repoPath: repoPath) ?? "main"
+            await git.defaultBranch(repoPath: repoPath) ?? "main"
         }
 
-        let info = try await gitService.createPullRequest(
+        let info = try await git.createPullRequest(
             repoPath: repoPath,
             branch: branch,
             baseBranch: resolvedBase,
@@ -573,7 +629,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         case .squash: .squash
         case .rebase: .rebase
         }
-        try await gitService.mergePullRequest(
+        try await gitService(projectID: projectID).mergePullRequest(
             repoPath: repoPath,
             number: number,
             method: mergeMethod,
@@ -589,7 +645,9 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         createBranch: Bool,
         baseBranch: String?
     ) async throws -> WorktreeDTO {
-        guard let project = projectStore.projects.first(where: { $0.id == projectID }) else {
+        guard let project = projectStore.projects.first(where: { $0.id == projectID })
+            ?? resolveRemoteProject(projectID)?.project
+        else {
             throw RemoteVCSError.projectNotFound
         }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
@@ -604,43 +662,31 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         let resolvedBase: String? = (createBranch && trimmedBase?.isEmpty == false) ? trimmedBase : nil
         let slug = Self.worktreeSlug(from: trimmedName)
         let worktreeDirectory = WorktreeLocationResolver.worktreeDirectory(for: project, slug: slug)
+        let context = projectGroupStore.workspaceContext(for: project)
 
-        if FileManager.default.fileExists(atPath: worktreeDirectory) {
+        if await context.fileOps.exists(at: worktreeDirectory) {
             throw RemoteVCSError.invalidInput("A worktree with this name already exists on disk.")
         }
 
-        let parentDirectory = URL(fileURLWithPath: worktreeDirectory)
-            .deletingLastPathComponent()
-            .path
-        try await GitProcessRunner.offMainThrowing {
-            try FileManager.default.createDirectory(
-                atPath: parentDirectory,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-        }
-
-        try await GitWorktreeService.shared.addWorktree(
-            repoPath: project.path,
+        let request = WorktreeCreationRequest(
+            name: trimmedName,
             path: worktreeDirectory,
             branch: trimmedBranch,
             createBranch: createBranch,
             baseBranch: resolvedBase
         )
-
-        let worktree = Worktree(
-            name: trimmedName,
-            path: worktreeDirectory,
-            branch: trimmedBranch,
-            ownsBranch: createBranch,
-            isPrimary: false
+        let worktree = try await worktreeStore.createWorktree(
+            project: project,
+            request: request,
+            context: context
         )
-        worktreeStore.add(worktree, to: project.id)
         return worktree.toDTO()
     }
 
     func vcsRemoveWorktree(projectID: UUID, worktreeID: UUID) async throws {
-        guard let project = projectStore.projects.first(where: { $0.id == projectID }) else {
+        guard let project = projectStore.projects.first(where: { $0.id == projectID })
+            ?? resolveRemoteProject(projectID)?.project
+        else {
             throw RemoteVCSError.projectNotFound
         }
         guard let worktree = worktreeStore.worktree(projectID: projectID, worktreeID: worktreeID) else {
@@ -653,6 +699,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         try await WorktreeStore.cleanupOnDisk(
             worktree: worktree,
             repoPath: project.path,
+            context: projectGroupStore.workspaceContext(for: project),
             teardownEmit: { line in
                 logger.error("[teardown \(worktreeID)] \(line.text)")
             }
@@ -661,7 +708,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     }
 
     private func repoPath(projectID: UUID) throws -> String {
-        guard let project = projectStore.projects.first(where: { $0.id == projectID }) else {
+        guard let project = project(for: projectID) else {
             throw RemoteVCSError.projectNotFound
         }
         return resolveWorktreePath(projectID: projectID) ?? project.path

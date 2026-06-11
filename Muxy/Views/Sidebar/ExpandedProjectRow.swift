@@ -88,7 +88,10 @@ struct ExpandedProjectRow: View {
             isCheckingGitRepo = true
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            isGitRepo = await GitWorktreeService.shared.isGitRepository(project.path)
+            isGitRepo = await GitWorktreeService.shared.isGitRepository(
+                project.path,
+                context: projectGroupStore.workspaceContext(for: project)
+            )
             isCheckingGitRepo = false
             if autoExpandWorktrees, isActive, hasWorktreeUI {
                 worktreesExpanded = true
@@ -238,15 +241,37 @@ struct ExpandedProjectRow: View {
         .accessibilityLabel(worktreesExpanded ? "Collapse Worktrees" : "Expand Worktrees")
     }
 
-    @ViewBuilder
+    private var remoteIndicator: some View {
+        Image(systemName: "network")
+            .font(.system(size: UIMetrics.fontXS, weight: .semibold))
+            .foregroundStyle(MuxyTheme.fgMuted)
+            .frame(width: UIMetrics.scaled(18), height: UIMetrics.scaled(18))
+            .help(remoteDeviceName ?? "Remote project")
+            .accessibilityLabel(remoteDeviceName.map { "Remote project on \($0)" } ?? "Remote project")
+    }
+
+    private var remoteDeviceName: String? {
+        projectGroupStore.device(for: project)?.displayName
+    }
+
     private var worktreeAccessory: some View {
+        HStack(spacing: UIMetrics.spacing2) {
+            if project.isRemote {
+                remoteIndicator
+            }
+            worktreeControl
+        }
+    }
+
+    @ViewBuilder
+    private var worktreeControl: some View {
         if hasWorktreeUI {
             worktreeChevron
         } else if isCheckingGitRepo {
             ProgressView()
                 .controlSize(.mini)
                 .frame(width: UIMetrics.scaled(18), height: UIMetrics.scaled(18))
-        } else {
+        } else if !project.isRemote {
             Color.clear
                 .frame(width: UIMetrics.scaled(18), height: UIMetrics.scaled(18))
         }
@@ -454,7 +479,10 @@ struct ExpandedProjectRow: View {
 
     @MainActor
     private func requestRemove(worktree: Worktree) async {
-        let hasChanges = await GitWorktreeService.shared.hasUncommittedChanges(worktreePath: worktree.path)
+        let hasChanges = await GitWorktreeService.shared.hasUncommittedChanges(
+            worktreePath: worktree.path,
+            context: projectGroupStore.workspaceContext(for: project)
+        )
         pendingWorktreeRemoval = WorktreeRemovalConfirmation(
             worktree: worktree,
             hasUncommittedChanges: hasChanges
@@ -480,6 +508,7 @@ struct ExpandedProjectRow: View {
         removalRequest = WorktreeRemovalRequest(
             worktree: worktree,
             repoPath: project.path,
+            context: projectGroupStore.workspaceContext(for: project),
             onSuccess: {
                 appState.removeWorktree(
                     projectID: project.id,
@@ -513,6 +542,7 @@ struct ExpandedProjectRow: View {
             project: project,
             appState: appState,
             worktreeStore: worktreeStore,
+            projectGroupStore: projectGroupStore,
             isRefreshing: $isRefreshingWorktrees
         )
     }

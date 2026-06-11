@@ -16,6 +16,28 @@ struct ProjectPickerPathServiceTests {
         #expect(service.abbreviatedDirectoryDisplayPath("/tmp/muxy") == "/tmp/muxy/")
     }
 
+    @Test("filtering reuses cached directory contents without re-listing")
+    func filteringReusesCachedContents() async {
+        let counter = CountingProjectPickerFileSystem(entries: [
+            .directory("alpha"), .directory("beta"), .file("readme.md"),
+        ])
+        let service = ProjectPickerPathService(homeDirectory: "/Users/alice", fileSystem: counter)
+
+        let directoryPath = "/Users/alice/code"
+        let items = try? await service.directoryContents(atPath: directoryPath).get()
+        #expect(counter.callCount == 1)
+        #expect(items?.count == 2)
+
+        let unfiltered = service.snapshot(for: service.state(for: "/Users/alice/code/"), items: items ?? [])
+        let filtered = service.snapshot(for: service.state(for: "/Users/alice/code/al"), items: items ?? [])
+
+        #expect(counter.callCount == 1)
+        #expect(unfiltered.rows.contains(where: { $0.name == "alpha" }))
+        #expect(unfiltered.rows.contains(where: { $0.name == "beta" }))
+        #expect(filtered.rows.contains(where: { $0.name == "alpha" }))
+        #expect(!filtered.rows.contains(where: { $0.name == "beta" }))
+    }
+
     @Test("input state separates directory leaf confirm and parent display paths")
     func inputStateInterpretation() {
         let service = ProjectPickerPathService(homeDirectory: "/Users/alice")
@@ -74,7 +96,7 @@ struct ProjectPickerPathServiceTests {
     }
 
     @Test("directory snapshot uses adapter contents and read failures")
-    func directorySnapshotUsesAdapter() {
+    func directorySnapshotUsesAdapter() async {
         let service = ProjectPickerPathService(homeDirectory: "/Users/alice", fileSystem: ProjectPickerPathServiceFileSystemStub(
             directoryContents: [
                 "/Users/alice": .success([.directory("Code"), .file("notes.txt"), .directorySymlink("Linked")]),
@@ -82,8 +104,8 @@ struct ProjectPickerPathServiceTests {
             ]
         ))
 
-        let readySnapshot = service.directorySnapshot(for: service.state(for: "~/"))
-        let failedSnapshot = service.directorySnapshot(for: service.state(for: "~/Missing/"))
+        let readySnapshot = await service.directorySnapshot(for: service.state(for: "~/"))
+        let failedSnapshot = await service.directorySnapshot(for: service.state(for: "~/Missing/"))
 
         #expect(readySnapshot == ProjectPickerDirectorySnapshot(
             rows: [.parent, .directory("Code"), .directorySymlink("Linked")],
@@ -93,7 +115,7 @@ struct ProjectPickerPathServiceTests {
     }
 
     @Test("directory snapshot includes directory symlinks and excludes file symlinks")
-    func directorySnapshotIncludesDirectorySymlinks() throws {
+    func directorySnapshotIncludesDirectorySymlinks() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("muxy-project-picker-symlink-test-\(UUID().uuidString)")
         let targetDirectory = root.appendingPathComponent("target-directory")
@@ -107,13 +129,30 @@ struct ProjectPickerPathServiceTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let service = ProjectPickerPathService(homeDirectory: "/Users/alice")
-        let snapshot = service.directorySnapshot(for: service.state(for: root.path + "/"))
+        let snapshot = await service.directorySnapshot(for: service.state(for: root.path + "/"))
 
         #expect(snapshot.rows.contains(.directory("target-directory")))
         #expect(snapshot.rows.contains(.directorySymlink("directory-link")))
         #expect(!snapshot.rows.map(\.name).contains("target-file"))
         #expect(!snapshot.rows.map(\.name).contains("file-link"))
         #expect(snapshot.rows.first { $0.name == "directory-link" }?.isDirectorySymlink == true)
+    }
+}
+
+private final class CountingProjectPickerFileSystem: ProjectPickerFileSystem, @unchecked Sendable {
+    private let entries: [ProjectPickerFileSystemDirectoryEntry]
+    private(set) var callCount = 0
+
+    init(entries: [ProjectPickerFileSystemDirectoryEntry]) {
+        self.entries = entries
+    }
+
+    func directoryState(atPath _: String) -> ProjectPickerFileSystemDirectoryState { .directory }
+    func isReadableFile(atPath _: String) -> Bool { true }
+
+    func contentsOfDirectory(atPath _: String) async throws -> [ProjectPickerFileSystemDirectoryEntry] {
+        callCount += 1
+        return entries
     }
 }
 
@@ -132,7 +171,7 @@ private struct ProjectPickerPathServiceFileSystemStub: ProjectPickerFileSystem {
         readablePaths.contains(path)
     }
 
-    func contentsOfDirectory(atPath path: String) throws -> [ProjectPickerFileSystemDirectoryEntry] {
+    func contentsOfDirectory(atPath path: String) async throws -> [ProjectPickerFileSystemDirectoryEntry] {
         switch directoryContents[path] {
         case let .success(entries):
             return entries

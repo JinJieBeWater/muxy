@@ -50,22 +50,43 @@ enum GitProcessRunner {
         let workingDirectory: String?
         let lineLimit: Int?
         let signpostName: StaticString
+        var stdinData: Data?
     }
 
     static func runGit(
         repoPath: String,
         arguments: [String],
-        lineLimit: Int? = nil
+        lineLimit: Int? = nil,
+        context: WorkspaceContext = .local
     ) async throws -> GitProcessResult {
-        try await runProcess(
-            ProcessSpec(
-                executable: "/usr/bin/env",
-                arguments: ["git"] + gitHubCredentialHelperArgs() + ["-C", repoPath] + arguments,
-                workingDirectory: nil,
-                lineLimit: lineLimit,
-                signpostName: "git"
+        guard case let .ssh(destination) = context else {
+            return try await runProcess(
+                ProcessSpec(
+                    executable: "/usr/bin/env",
+                    arguments: ["git"] + gitHubCredentialHelperArgs() + ["-C", repoPath] + arguments,
+                    workingDirectory: nil,
+                    lineLimit: lineLimit,
+                    signpostName: "git"
+                )
             )
+        }
+        let resolved = CommandTransform.resolve(
+            executable: "git",
+            arguments: ["-C", repoPath] + arguments,
+            workingDirectory: nil,
+            in: .ssh(destination)
         )
+        return try await SSHCommandRunner.withTimeout(SSHCommandRunner.defaultTimeout) {
+            try await runProcess(
+                ProcessSpec(
+                    executable: resolved.executable,
+                    arguments: resolved.arguments,
+                    workingDirectory: resolved.workingDirectory,
+                    lineLimit: lineLimit,
+                    signpostName: "git"
+                )
+            )
+        }
     }
 
     static func gitHubCredentialHelperArgs(ghResolver: (String) -> String? = resolveExecutable) -> [String] {
@@ -106,6 +127,23 @@ enum GitProcessRunner {
                 workingDirectory: workingDirectory,
                 lineLimit: nil,
                 signpostName: "command"
+            )
+        )
+    }
+
+    static func runResolved(
+        _ resolved: ResolvedLaunch,
+        lineLimit: Int? = nil,
+        stdinData: Data? = nil
+    ) async throws -> GitProcessResult {
+        try await runProcess(
+            ProcessSpec(
+                executable: resolved.executable,
+                arguments: resolved.arguments,
+                workingDirectory: resolved.workingDirectory,
+                lineLimit: lineLimit,
+                signpostName: "command",
+                stdinData: stdinData
             )
         )
     }
@@ -177,11 +215,21 @@ enum GitProcessRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let stdinPipe = spec.stdinData.map { _ in Pipe() }
+        if let stdinPipe {
+            process.standardInput = stdinPipe
+        }
 
         do {
             try process.run()
         } catch {
             throw GitProcessError.launchFailed(error.localizedDescription)
+        }
+
+        if let stdinPipe, let stdinData = spec.stdinData {
+            let writer = stdinPipe.fileHandleForWriting
+            try? writer.write(contentsOf: stdinData)
+            try? writer.close()
         }
 
         guard handle.attach(process) else {

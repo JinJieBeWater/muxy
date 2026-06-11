@@ -30,6 +30,7 @@ struct MainWindow: View {
     @Environment(ProjectStore.self) private var projectStore
     @Environment(WorktreeStore.self) private var worktreeStore
     @Environment(ProjectGroupStore.self) private var projectGroupStore
+    @Environment(RemoteDeviceStore.self) private var remoteDeviceStore
     @Environment(GhosttyService.self) private var ghostty
     @State private var dragCoordinator = TabDragCoordinator()
     private enum CloseConfirmationKind {
@@ -70,6 +71,7 @@ struct MainWindow: View {
     @State private var showTerminalOmnibox = false
     @State private var terminalOmniboxLaunchScope = TerminalOmniboxLaunchScope.openTabs
     @State private var showProjectPicker = false
+    @State private var remoteProjectDevice: RemoteDevice?
     @State private var overlayAnimatingOut = false
     @State private var isFullScreen = false
     @AppStorage("muxy.sidebarExpanded") private var sidebarExpanded = false
@@ -169,6 +171,13 @@ struct MainWindow: View {
         .background(WindowTitleUpdater(title: windowTitle))
         .ignoresSafeArea(.container, edges: .top)
         .onReceive(NotificationCenter.default.publisher(for: .openProjectPicker)) { _ in
+            showProjectPicker = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openRemoteProjectPicker)) { notification in
+            guard let deviceID = notification.userInfo?[OpenRemoteProjectPickerUserInfoKey.deviceID] as? UUID,
+                  let device = remoteDeviceStore.device(id: deviceID)
+            else { return }
+            remoteProjectDevice = device
             showProjectPicker = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .openExtensionDirectoryAsProject)) { notification in
@@ -353,6 +362,9 @@ struct MainWindow: View {
                     activePane: activeTerminalPane,
                     activeWorktree: activeProject.flatMap { resolvedActiveWorktree(for: $0) },
                     fallbackProjectPath: activeProject.map { activeWorktreePath(for: $0) },
+                    isRemoteWorkspace: activeProject.map {
+                        projectGroupStore.workspaceContext(for: $0).isRemote
+                    } ?? false,
                     isInteractive: activeTerminalPane != nil && !overlayAnimatingOut,
                     richInputVisible: richInputPanelVisible,
                     richInputFontSize: $richInputFontSize,
@@ -364,7 +376,8 @@ struct MainWindow: View {
                                 commandID: binding.item.command,
                                 appState: appState,
                                 projectStore: projectStore,
-                                worktreeStore: worktreeStore
+                                worktreeStore: worktreeStore,
+                                projectGroupStore: projectGroupStore
                             )
                         )
                     }
@@ -406,7 +419,7 @@ struct MainWindow: View {
                 isFocused: true,
                 isWindowTitleBar: true,
                 showDevelopmentBadge: AppEnvironment.isDevelopment,
-                openInIDEProjectPath: activeWorktreePath(for: project),
+                openInIDEProjectPath: project.isRemote ? nil : activeWorktreePath(for: project),
                 projectID: project.id,
                 onSelectTab: { tabID in
                     appState.dispatch(.selectTab(projectID: project.id, areaID: area.id, tabID: tabID))
@@ -487,7 +500,9 @@ struct MainWindow: View {
                                 .padding(.trailing, UIMetrics.spacing3)
                         }
                         if let project = activeProject {
-                            OpenInIDEControl(projectPath: activeWorktreePath(for: project))
+                            if !project.isRemote {
+                                OpenInIDEControl(projectPath: activeWorktreePath(for: project))
+                            }
                             LayoutPickerMenu(projectID: project.id)
                         }
                         ExtensionTopbarItems()
@@ -555,9 +570,22 @@ struct MainWindow: View {
     private var projectPickerOverlay: some View {
         if showProjectPicker {
             ProjectPickerOverlay(
-                projectPaths: projectStore.projects.map(\.path),
+                projectPaths: projectPickerPaths,
+                context: projectPickerContext,
                 onConfirm: { path, createIfMissing in
-                    ProjectOpenService.confirmProjectPathResult(
+                    if let device = remoteProjectDevice {
+                        return RemoteDeviceProjectConfirmationService(
+                            appState: appState,
+                            projectStore: projectStore,
+                            worktreeStore: worktreeStore,
+                            projectGroupStore: projectGroupStore
+                        )
+                        .confirm(path: path, device: device)
+                    }
+                    if projectGroupStore.isRemoteWorkspaceActive {
+                        return confirmRemoteProjectPath(path)
+                    }
+                    return ProjectOpenService.confirmProjectPathResult(
                         path,
                         appState: appState,
                         projectStore: projectStore,
@@ -574,7 +602,10 @@ struct MainWindow: View {
                         projectGroupStore: projectGroupStore
                     )
                 },
-                onDismiss: { showProjectPicker = false }
+                onDismiss: {
+                    showProjectPicker = false
+                    remoteProjectDevice = nil
+                }
             )
             .transition(.opacity.combined(with: .scale(scale: 0.98)))
         }
@@ -628,7 +659,11 @@ struct MainWindow: View {
     }
 
     private var omniboxProjects: [Project] {
-        showHomeProject ? projectStore.projects : projectStore.storedProjects
+        if projectGroupStore.isRemoteWorkspaceActive {
+            let remoteHome = showHomeProject ? projectGroupStore.activeRemoteHomeProject.map { [$0] } ?? [] : []
+            return remoteHome + projectGroupStore.displayProjects(localProjects: projectStore.storedProjects)
+        }
+        return showHomeProject ? projectStore.projects : projectStore.storedProjects
     }
 
     private var terminalOmniboxProjects: [TerminalOmniboxProjectItem] {
@@ -682,8 +717,8 @@ struct MainWindow: View {
     }
 
     private func selectOmniboxProject(_ projectID: UUID, worktreeID: UUID? = nil) -> Bool {
-        guard let project = projectStore.projects.first(where: { $0.id == projectID })
-        else { return false }
+        guard let project = resolveOmniboxProject(projectID) else { return false }
+        if project.isRemote { worktreeStore.ensurePrimary(for: project) }
         let worktree = if let worktreeID {
             worktreeStore.list(for: project.id).first { $0.id == worktreeID }
         } else {
@@ -694,12 +729,62 @@ struct MainWindow: View {
         return true
     }
 
+    private func resolveOmniboxProject(_ projectID: UUID) -> Project? {
+        if let project = projectStore.projects.first(where: { $0.id == projectID }) {
+            return project
+        }
+        return omniboxProjects.first(where: { $0.id == projectID })
+    }
+
     private func selectOmniboxWorkspace(_ workspace: TerminalOmniboxWorkspaceItem) {
         guard let groupID = workspace.groupID else {
             projectGroupStore.clearGroupSelection()
+            selectFirstProjectOfActiveWorkspace()
             return
         }
         projectGroupStore.selectGroup(id: groupID)
+        selectFirstProjectOfActiveWorkspace()
+    }
+
+    private func selectFirstProjectOfActiveWorkspace() {
+        WorkspaceSelectionService.selectFirstProject(
+            appState: appState,
+            projectStore: projectStore,
+            worktreeStore: worktreeStore,
+            projectGroupStore: projectGroupStore
+        )
+    }
+
+    private var projectPickerContext: WorkspaceContext {
+        if let device = remoteProjectDevice {
+            return .ssh(device.destination)
+        }
+        return projectGroupStore.activeWorkspaceContext
+    }
+
+    private var projectPickerPaths: [String] {
+        if let device = remoteProjectDevice {
+            return projectStore.storedProjects
+                .filter { $0.remoteDeviceID == device.id }
+                .map(\.path)
+        }
+        if projectGroupStore.isRemoteWorkspaceActive {
+            return projectGroupStore.activeRemoteProjects.map(\.path)
+        }
+        return projectStore.projects.map(\.path)
+    }
+
+    private func confirmRemoteProjectPath(_ path: String) -> ProjectOpenConfirmationResult {
+        guard let group = projectGroupStore.activeGroup, group.type == .ssh else { return .failed }
+        let name = path.split(separator: "/").last.map(String.init) ?? path
+        guard let remote = projectGroupStore.addRemoteProject(name: name, path: path, toGroup: group.id) else {
+            return .failed
+        }
+        let project = remote.asProject(workspaceID: group.id, sortOrder: group.remoteProjects.count)
+        worktreeStore.ensurePrimary(for: project)
+        guard let primary = worktreeStore.primary(for: project.id) else { return .failed }
+        appState.selectProject(project, worktree: primary)
+        return .success
     }
 
     private var toastPosition: ToastPosition {
@@ -801,9 +886,17 @@ struct MainWindow: View {
         return WorktreeKey(projectID: projectID, worktreeID: worktreeID)
     }
 
+    private var allActiveProjects: [Project] {
+        let remoteProjects = projectGroupStore.activeRemoteProjects.enumerated().map { index, remote in
+            remote.asProject(workspaceID: projectGroupStore.activeGroupID ?? remote.id, sortOrder: index)
+        }
+        let remoteHome = projectGroupStore.activeRemoteHomeProject.map { [$0] } ?? []
+        return projectStore.projects + remoteHome + remoteProjects
+    }
+
     private var activeProject: Project? {
         guard let pid = appState.activeProjectID else { return nil }
-        return projectStore.projects.first { $0.id == pid }
+        return allActiveProjects.first { $0.id == pid }
     }
 
     private var windowTitle: String {
@@ -884,7 +977,7 @@ struct MainWindow: View {
     }
 
     private var projectsWithTabs: [Project] {
-        projectStore.projects.filter { appState.hasTabs(for: $0.id) }
+        allActiveProjects.filter { appState.hasTabs(for: $0.id) }
     }
 
     var richInputPanelVisible: Bool { panelHost.isOpen(BuiltinPanel.richInput) }
@@ -1048,7 +1141,7 @@ struct MainWindow: View {
     }
 
     private func updateWorkspaceFileWatcher() {
-        guard let project = activeProject else {
+        guard let project = activeProject, !project.isRemote else {
             workspaceFileWatcher.setRoot(nil)
             return
         }
