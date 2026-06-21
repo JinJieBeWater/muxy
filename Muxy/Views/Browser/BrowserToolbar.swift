@@ -4,7 +4,9 @@ struct BrowserToolbar: View {
     let state: BrowserTabState
     @FocusState.Binding var addressFieldFocused: Bool
 
+    @Environment(BrowserProfileStore.self) private var profileStore
     @State private var addressText: String = ""
+    @State private var installedBrowsers: [InstalledBrowser] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +31,10 @@ struct BrowserToolbar: View {
                 }
 
                 addressField
+
+                openInBrowserMenu
+
+                profilePicker
             }
             .padding(.horizontal, UIMetrics.spacing3)
             .frame(height: UIMetrics.titleBarHeight)
@@ -51,6 +57,88 @@ struct BrowserToolbar: View {
         }
         .onAppear {
             addressText = state.url?.absoluteString ?? ""
+        }
+    }
+
+    private var openInBrowserMenu: some View {
+        Menu {
+            Button("Open in Default Browser") { openInDefaultBrowser() }
+            if !installedBrowsers.isEmpty {
+                Divider()
+                ForEach(installedBrowsers) { browser in
+                    Button(browser.name) { openURL(in: browser) }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.forward.app")
+                .font(.system(size: UIMetrics.fontBody, weight: .medium))
+                .foregroundStyle(MuxyTheme.fgMuted)
+                .frame(width: UIMetrics.controlMedium, height: UIMetrics.controlMedium)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(state.url == nil)
+        .help("Open in External Browser")
+        .onAppear {
+            if installedBrowsers.isEmpty { installedBrowsers = InstalledBrowsers.all() }
+        }
+    }
+
+    private func openInDefaultBrowser() {
+        guard let url = state.url else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openURL(in browser: InstalledBrowser) {
+        guard let url = state.url else { return }
+        InstalledBrowsers.open(url, in: browser)
+    }
+
+    private var profilePicker: some View {
+        Menu {
+            ForEach(profileStore.profiles) { profile in
+                Button {
+                    selectProfile(profile.id)
+                } label: {
+                    if profile.id == state.profileID {
+                        Label(profile.name, systemImage: "checkmark")
+                    } else {
+                        Text(profile.name)
+                    }
+                }
+            }
+            Divider()
+            Button("Manage Profiles…") {
+                SettingsFocusCoordinator.shared.request(.browser)
+                NotificationCenter.default.post(name: .openSettingsModal, object: nil)
+            }
+        } label: {
+            HStack(spacing: UIMetrics.spacing1) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: UIMetrics.fontBody, weight: .medium))
+                Text(currentProfileName)
+                    .font(.system(size: UIMetrics.fontCaption, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(MuxyTheme.fgMuted)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Browser Profile")
+    }
+
+    private var currentProfileName: String {
+        profileStore.profile(id: state.profileID)?.name ?? BrowserProfile.defaultName
+    }
+
+    private func selectProfile(_ id: UUID) {
+        guard id != state.profileID else { return }
+        state.profileID = id
+        if let url = state.url {
+            state.pendingURL = url
         }
     }
 
