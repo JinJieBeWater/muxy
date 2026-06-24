@@ -67,6 +67,11 @@ struct ProjectInfo: Equatable {
     let name: String
     let path: String
     let isActive: Bool
+    let sortOrder: Int
+    let iconColor: String?
+    let icon: String?
+    let logo: String?
+    let worktreesEnabled: Bool
 }
 
 struct WorktreeInfo: Equatable {
@@ -233,6 +238,12 @@ enum MuxyAPI {
             "browser.read",
             "browser.close",
             "projects.delete",
+            "projects.add",
+            "projects.rename",
+            "projects.setColor",
+            "projects.setIcon",
+            "projects.setLogo",
+            "projects.reorder",
             "lifecycle.ackBeforeClose",
             "lifecycle.resolveBeforeClose",
             "lifecycle.closeSelf",
@@ -335,6 +346,12 @@ enum MuxyAPI {
             "projects.list": .projectsRead,
             "projects.switch": .projectsWrite,
             "projects.delete": .projectsDelete,
+            "projects.add": .projectsWrite,
+            "projects.rename": .projectsWrite,
+            "projects.setColor": .projectsWrite,
+            "projects.setIcon": .projectsWrite,
+            "projects.setLogo": .projectsWrite,
+            "projects.reorder": .projectsWrite,
             "worktrees.list": .worktreesRead,
             "worktrees.create": .worktreesWrite,
             "worktrees.switch": .worktreesWrite,
@@ -399,6 +416,7 @@ enum MuxyAPI {
         private static let eventPermissions: [String: ExtensionPermission] = [
             ExtensionEventName.agentStatus: .agentsRead,
             ExtensionEventName.fileChanged: .filesRead,
+            ExtensionEventName.projectsChanged: .projectsRead,
         ]
     }
 
@@ -682,7 +700,12 @@ enum MuxyAPI {
                     id: project.id,
                     name: project.name,
                     path: project.path,
-                    isActive: project.id == appState.activeProjectID
+                    isActive: project.id == appState.activeProjectID,
+                    sortOrder: project.sortOrder,
+                    iconColor: project.iconColor,
+                    icon: project.icon,
+                    logo: project.logo,
+                    worktreesEnabled: project.worktreesEnabled
                 )
             }
         }
@@ -743,6 +766,97 @@ enum MuxyAPI {
             } catch {
                 return .failure(.underlying(error.localizedDescription))
             }
+        }
+
+        static func add(path: String, context: Context) -> Result<Void, APIError> {
+            let before = Set(context.projectStore.projects.map(\.id))
+            let confirmed = ProjectOpenService.confirmProjectPath(
+                path,
+                appState: context.appState,
+                projectStore: context.projectStore,
+                worktreeStore: context.worktreeStore,
+                projectGroupStore: context.projectGroupStore,
+                createIfMissing: false
+            )
+            guard confirmed else {
+                return .failure(.invalidArguments("could not open project at path '\(path)'"))
+            }
+            if let project = findProject(path, in: context.projectStore.projects),
+               project.id != Project.homeID,
+               !before.contains(project.id)
+            {
+                context.projectStore.setWorktreesEnabled(id: project.id, to: true)
+            }
+            return .success(())
+        }
+
+        static func rename(identifier: String, name: String, context: Context) -> Result<Void, APIError> {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return .failure(.invalidArguments("name cannot be empty"))
+            }
+            return resolveMutableProject(identifier, context: context).map {
+                context.projectStore.rename(id: $0.id, to: trimmed)
+            }
+        }
+
+        static func setColor(identifier: String, color: String?, context: Context) -> Result<Void, APIError> {
+            resolveMutableProject(identifier, context: context).map {
+                context.projectStore.setIconColor(id: $0.id, to: color)
+            }
+        }
+
+        static func setIcon(identifier: String, icon: String?, context: Context) -> Result<Void, APIError> {
+            resolveMutableProject(identifier, context: context).map {
+                context.projectStore.setIcon(id: $0.id, to: icon)
+            }
+        }
+
+        static func setLogo(identifier: String, logo: String?, context: Context) -> Result<Void, APIError> {
+            switch resolveMutableProject(identifier, context: context) {
+            case let .success(project):
+                if let logo, !ProjectLogoStorage.isStoredLogoFilename(logo, forProjectID: project.id) {
+                    return .failure(.invalidArguments("invalid project logo"))
+                }
+                context.projectStore.setLogo(id: project.id, to: logo)
+                return .success(())
+            case let .failure(error):
+                return .failure(error)
+            }
+        }
+
+        static func reorder(identifiers: [String], context: Context) -> Result<Void, APIError> {
+            var orderedIDs: [UUID] = []
+            for identifier in identifiers {
+                switch resolveMutableProject(identifier, context: context) {
+                case let .success(project): orderedIDs.append(project.id)
+                case let .failure(error): return .failure(error)
+                }
+            }
+            let reorderable = Set(context.projectStore.projects.lazy.filter { !$0.isHome && !$0.isRemote }.map(\.id))
+            guard orderedIDs.count == reorderable.count, Set(orderedIDs) == reorderable else {
+                return .failure(.invalidArguments("identifiers must list every project exactly once"))
+            }
+            context.projectStore.persistOrder(orderedIDs, scopedTo: reorderable)
+            return .success(())
+        }
+
+        private static func resolveMutableProject(_ identifier: String, context: Context) -> Result<Project, APIError> {
+            guard let project = context.projectGroupStore.resolveProject(
+                identifier: identifier,
+                localProjects: context.projectStore.projects,
+                activeProjectID: context.appState.activeProjectID
+            )
+            else {
+                return .failure(.projectNotFound(identifier))
+            }
+            guard project.id != Project.homeID else {
+                return .failure(.invalidArguments("the home project cannot be modified"))
+            }
+            guard !project.isRemote else {
+                return .failure(.invalidArguments("remote projects cannot be modified"))
+            }
+            return .success(project)
         }
     }
 

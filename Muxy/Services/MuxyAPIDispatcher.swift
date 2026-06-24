@@ -284,19 +284,49 @@ enum MuxyAPIDispatcher {
             ))
             return NSNull()
         case "projects.delete":
-            guard let projectStore = context.projectStore,
-                  let worktreeStore = context.worktreeStore,
-                  let projectGroupStore = context.projectGroupStore
-            else { throw APIError.projectStoreUnavailable }
             try await unwrap(MuxyAPI.Projects.delete(
                 identifier: stringArg(args, "identifier"),
-                context: MuxyAPI.Projects.Context(
-                    extensionID: context.extensionID,
-                    appState: context.appState,
-                    projectStore: projectStore,
-                    worktreeStore: worktreeStore,
-                    projectGroupStore: projectGroupStore
-                )
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.add":
+            try unwrap(MuxyAPI.Projects.add(
+                path: stringArg(args, "path"),
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.rename":
+            try unwrap(MuxyAPI.Projects.rename(
+                identifier: stringArg(args, "identifier"),
+                name: stringArg(args, "name"),
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.setColor":
+            try unwrap(MuxyAPI.Projects.setColor(
+                identifier: stringArg(args, "identifier"),
+                color: optionalStringArg(args, "color"),
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.setIcon":
+            try unwrap(MuxyAPI.Projects.setIcon(
+                identifier: stringArg(args, "identifier"),
+                icon: optionalStringArg(args, "icon"),
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.setLogo":
+            try unwrap(MuxyAPI.Projects.setLogo(
+                identifier: stringArg(args, "identifier"),
+                logo: optionalStringArg(args, "logo"),
+                context: projectsContext(context)
+            ))
+            return NSNull()
+        case "projects.reorder":
+            try unwrap(MuxyAPI.Projects.reorder(
+                identifiers: stringArrayArg(args, "identifiers"),
+                context: projectsContext(context)
             ))
             return NSNull()
         case "worktrees.list":
@@ -718,6 +748,24 @@ enum MuxyAPIDispatcher {
         throw APIError.invalidArguments("missing argument '\(key)'")
     }
 
+    private static func optionalStringArg(_ args: [String: Any], _ key: String) -> String? {
+        args[key] as? String
+    }
+
+    private static func projectsContext(_ context: Context) throws -> MuxyAPI.Projects.Context {
+        guard let projectStore = context.projectStore,
+              let worktreeStore = context.worktreeStore,
+              let projectGroupStore = context.projectGroupStore
+        else { throw APIError.projectStoreUnavailable }
+        return MuxyAPI.Projects.Context(
+            extensionID: context.extensionID,
+            appState: context.appState,
+            projectStore: projectStore,
+            worktreeStore: worktreeStore,
+            projectGroupStore: projectGroupStore
+        )
+    }
+
     private static func doubleArg(_ args: [String: Any], _ key: String) throws -> Double {
         if let value = args[key] as? Double { return value }
         if let value = args[key] as? Int { return Double(value) }
@@ -804,6 +852,11 @@ enum MuxyAPIDispatcher {
             "name": project.name,
             "path": project.path,
             "isActive": project.isActive,
+            "sortOrder": project.sortOrder,
+            "iconColor": project.iconColor ?? NSNull(),
+            "icon": project.icon ?? NSNull(),
+            "logo": project.logo ?? NSNull(),
+            "worktreesEnabled": project.worktreesEnabled,
         ]
     }
 
